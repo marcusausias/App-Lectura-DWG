@@ -1,5 +1,7 @@
 #include "dwg_extract.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -130,10 +132,23 @@ Entity convertSpline(const Dwg_Entity_SPLINE* spline, double maxSagitta) {
     }
 
     const int degree = spline->degree > 0 ? spline->degree : 3;
-    // Muestreo proporcional al número de puntos de control: una spline con
-    // muchos tramos necesita más muestras para no perder su forma.
-    const int samples =
-        std::min(1024, std::max(32, static_cast<int>(control.size()) * 16));
+
+    // El número de muestras se saca del tamaño de la curva, no de cuántos
+    // puntos de control tenga. Contar puntos de control reparte el mismo
+    // detalle a una spline de 70 metros que a una de 7 milímetros, y en un
+    // plano con cientos de curvas pequeñas eso es memoria y trabajo de dibujo
+    // tirados a la basura.
+    //
+    // Para un tramo de longitud L partido en n, la separación respecto a la
+    // curva va como L²/(8·R·n²). Tomando el radio del orden de L queda
+    // n ≈ √(L / 8ε), que es lo que se usa aquí.
+    double controlLength = 0.0;
+    for (size_t i = 1; i < control.size(); ++i) {
+      controlLength += dwgcore::distance(control[i - 1], control[i]);
+    }
+    const int estimated = static_cast<int>(
+        std::ceil(std::sqrt(controlLength / (8.0 * maxSagitta))));
+    const int samples = std::clamp(estimated, 8, 256);
 
     std::vector<Vec2> sampled =
         dwgcore::tessellateBSpline(control, knots, degree, samples);

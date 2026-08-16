@@ -48,7 +48,11 @@ struct Bounds {
 struct Entity {
   uint64_t id = 0;
   EntityType type = EntityType::Unknown;
+  // Nombre de la capa según sale del DWG. Al montar la escena se sustituye por
+  // `layerId`, que apunta a la tabla de capas y no repite la cadena 80.000
+  // veces.
   std::string layer;
+  uint16_t layerId = 0;
 
   std::vector<PolyVertex> vertices;  // Coordenadas de mundo.
   bool closed = false;

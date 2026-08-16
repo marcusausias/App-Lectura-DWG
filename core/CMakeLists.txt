@@ -15,6 +15,9 @@ add_library(dwgcore STATIC
   src/transform.cpp
   src/entity.cpp
   src/flatten.cpp
+  src/spatial.cpp
+  src/scene.cpp
+  src/cache.cpp
 )
 
 target_include_directories(dwgcore PUBLIC include)
