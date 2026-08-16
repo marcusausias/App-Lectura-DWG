@@ -1,0 +1,260 @@
+#include "dwg_extract.h"
+
+#include <cstdlib>
+#include <cstring>
+
+#include <dwg.h>
+#include <dwg_api.h>
+
+#include "dwgcore/entity.h"
+#include "dwgcore/geometry.h"
+#include "dwgcore/transform.h"
+
+namespace dwgapp {
+namespace {
+
+using dwgcore::Entity;
+using dwgcore::EntityType;
+using dwgcore::PolyVertex;
+using dwgcore::Vec2;
+using dwgcore::Vec3;
+
+bool isFatal(int error) { return error >= DWG_ERR_CRITICAL; }
+
+std::string readText(void* entity, const char* entityName, const char* field) {
+  char* text = nullptr;
+  int isNew = 0;
+  if (!dwg_dynapi_entity_utf8text(entity, entityName, field, &text, &isNew,
+                                  nullptr)) {
+    return {};
+  }
+  if (text == nullptr) return {};
+  std::string result(text);
+  if (isNew) std::free(text);
+  return result;
+}
+
+// Las entidades planas (arco, círculo, polilínea ligera) guardan sus
+// coordenadas en el sistema del objeto, no en el del mundo. Sin esta
+// conversión, cualquier geometría hecha con simetría aparece reflejada.
+Vec2 toWorld(double x, double y, double z, const BITCODE_3BD& extrusion) {
+  const Vec3 normal{extrusion.x, extrusion.y, extrusion.z};
+  // Una normal nula significa que el DWG no la trae: se asume la de por defecto.
+  if (normal.x == 0.0 && normal.y == 0.0 && normal.z == 0.0) return {x, y};
+  const Vec3 world = dwgcore::ocsToWcs({x, y, z}, normal);
+  return {world.x, world.y};
+}
+
+std::string layerNameOf(Dwg_Data* dwg, const Dwg_Object* object) {
+  const Dwg_Object_Entity* common = object->tio.entity;
+  if (common == nullptr || common->layer == nullptr) return {};
+  Dwg_Object* layerObject = dwg_ref_object(dwg, common->layer);
+  if (layerObject == nullptr || layerObject->tio.object == nullptr) return {};
+  if (layerObject->fixedtype != DWG_TYPE_LAYER) return {};
+  return readText(layerObject->tio.object->tio.LAYER, "LAYER", "name");
+}
+
+Entity convertLine(const Dwg_Entity_LINE* line) {
+  // LINE guarda sus extremos ya en coordenadas de mundo, a diferencia del
+  // resto de entidades planas.
+  return dwgcore::makeLine({line->start.x, line->start.y},
+                           {line->end.x, line->end.y});
+}
+
+Entity convertArc(const Dwg_Entity_ARC* arc) {
+  const Vec2 center = toWorld(arc->center.x, arc->center.y, arc->center.z,
+                              arc->extrusion);
+  return dwgcore::makeArc(center, arc->radius, arc->start_angle, arc->end_angle);
+}
+
+Entity convertCircle(const Dwg_Entity_CIRCLE* circle) {
+  const Vec2 center = toWorld(circle->center.x, circle->center.y,
+                              circle->center.z, circle->extrusion);
+  return dwgcore::makeCircle(center, circle->radius);
+}
+
+Entity convertLwPolyline(const Dwg_Entity_LWPOLYLINE* polyline) {
+  Entity entity;
+  entity.type = EntityType::Polyline;
+  // El bit 512 del código 70 marca la polilínea como cerrada.
+  entity.closed = (polyline->flag & 512) != 0;
+
+  entity.vertices.reserve(polyline->num_points);
+  for (unsigned long i = 0; i < polyline->num_points; ++i) {
+    PolyVertex vertex;
+    vertex.position = toWorld(polyline->points[i].x, polyline->points[i].y,
+                              polyline->elevation, polyline->extrusion);
+    // num_bulges puede ser menor que num_points: los tramos sin bulge
+    // declarado son rectos.
+    vertex.bulge = (i < polyline->num_bulges) ? polyline->bulges[i] : 0.0;
+    entity.vertices.push_back(vertex);
+  }
+
+  dwgcore::updateBounds(entity);
+  return entity;
+}
+
+// Nombre del bloque al que apunta un INSERT.
+std::string blockNameOf(Dwg_Data* dwg, const Dwg_Entity_INSERT* insert) {
+  if (insert->block_header == nullptr) return {};
+  Dwg_Object* header = dwg_ref_object(dwg, insert->block_header);
+  if (header == nullptr || header->tio.object == nullptr) return {};
+  if (header->fixedtype != DWG_TYPE_BLOCK_HEADER) return {};
+  return readText(header->tio.object->tio.BLOCK_HEADER, "BLOCK_HEADER", "name");
+}
+
+dwgcore::InsertRef convertInsert(Dwg_Data* dwg, const Dwg_Entity_INSERT* insert) {
+  dwgcore::InsertRef ref;
+  ref.blockName = blockNameOf(dwg, insert);
+
+  const Vec2 origin =
+      toWorld(insert->ins_pt.x, insert->ins_pt.y, insert->ins_pt.z,
+              insert->extrusion);
+
+  // Una escala de cero deja el bloque invisible y además haría degenerar la
+  // transformada, así que se trata como escala unidad.
+  const double scaleX = insert->scale.x != 0.0 ? insert->scale.x : 1.0;
+  const double scaleY = insert->scale.y != 0.0 ? insert->scale.y : 1.0;
+
+  ref.transform =
+      dwgcore::insertTransform(origin, scaleX, scaleY, insert->rotation);
+  return ref;
+}
+
+// Marcadores estructurales que aparecen en la lista de entidades pero no
+// dibujan nada: delimitan bloques y secuencias. Contarlos como "pendientes de
+// implementar" solo ensucia el informe de lo que falta de verdad.
+bool isStructuralMarker(int fixedtype) {
+  switch (fixedtype) {
+    case DWG_TYPE_BLOCK:
+    case DWG_TYPE_ENDBLK:
+    case DWG_TYPE_SEQEND:
+    case DWG_TYPE_ATTDEF:
+    case DWG_TYPE_ATTRIB:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Handle del propietario de una entidad, que indica en qué bloque vive.
+unsigned long ownerHandleOf(Dwg_Data* dwg, const Dwg_Object* object) {
+  const Dwg_Object_Entity* common = object->tio.entity;
+  if (common == nullptr || common->ownerhandle == nullptr) return 0;
+  Dwg_Object* owner = dwg_ref_object(dwg, common->ownerhandle);
+  return owner != nullptr ? static_cast<unsigned long>(owner->handle.value) : 0;
+}
+
+}  // namespace
+
+ExtractedScene extractScene(const std::string& path) {
+  ExtractedScene scene;
+
+  Dwg_Data dwg;
+  std::memset(&dwg, 0, sizeof(dwg));
+  const int error = dwg_read_file(path.c_str(), &dwg);
+  if (isFatal(error)) {
+    scene.errorMessage =
+        "LibreDWG no pudo leer el archivo (código " + std::to_string(error) + ")";
+    dwg_free(&dwg);
+    return scene;
+  }
+
+  // Primera pasada: nombre de cada bloque por su handle, para saber después a
+  // cuál pertenece cada entidad.
+  std::map<unsigned long, std::string> blockNameByHandle;
+  for (unsigned long i = 0; i < dwg.num_objects; ++i) {
+    const Dwg_Object* object = &dwg.object[i];
+    if (object->supertype != DWG_SUPERTYPE_OBJECT) continue;
+    if (object->fixedtype != DWG_TYPE_BLOCK_HEADER) continue;
+    if (object->tio.object == nullptr) continue;
+
+    Dwg_Object_BLOCK_HEADER* header = object->tio.object->tio.BLOCK_HEADER;
+    if (header == nullptr) continue;
+
+    const std::string name = readText(header, "BLOCK_HEADER", "name");
+    blockNameByHandle[static_cast<unsigned long>(object->handle.value)] = name;
+
+    // Las referencias externas se declaran como bloque, pero su contenido está
+    // en otro archivo. Aquí se crea la definición vacía para que el aplanado
+    // las cuente como bloque ausente y la interfaz pueda avisar.
+    if (!header->blkisxref && !name.empty()) {
+      dwgcore::BlockDefinition definition;
+      definition.name = name;
+      scene.blocks[name] = std::move(definition);
+    }
+  }
+
+  const Dwg_Object* modelSpace = dwg_model_space_object(&dwg);
+  const unsigned long modelSpaceHandle =
+      modelSpace != nullptr ? static_cast<unsigned long>(modelSpace->handle.value)
+                            : 0;
+
+  // Segunda pasada: convertir entidades y repartirlas entre el espacio modelo y
+  // los bloques a los que pertenecen.
+  for (unsigned long i = 0; i < dwg.num_objects; ++i) {
+    Dwg_Object* object = &dwg.object[i];
+    if (object->supertype != DWG_SUPERTYPE_ENTITY) continue;
+    if (object->tio.entity == nullptr) continue;
+
+    const unsigned long owner = ownerHandleOf(&dwg, object);
+    const bool inModelSpace = (owner == modelSpaceHandle) || (owner == 0);
+
+    std::string ownerBlock;
+    if (!inModelSpace) {
+      const auto found = blockNameByHandle.find(owner);
+      // Una entidad cuyo bloque no está en la tabla no se puede colocar: se
+      // descarta en vez de dibujarla en el sitio equivocado.
+      if (found == blockNameByHandle.end()) continue;
+      ownerBlock = found->second;
+      if (scene.blocks.find(ownerBlock) == scene.blocks.end()) continue;
+    }
+
+    if (object->fixedtype == DWG_TYPE_INSERT) {
+      dwgcore::InsertRef ref = convertInsert(&dwg, object->tio.entity->tio.INSERT);
+      if (ref.blockName.empty()) continue;
+      if (inModelSpace) {
+        scene.inserts.push_back(std::move(ref));
+      } else {
+        scene.blocks[ownerBlock].inserts.push_back(std::move(ref));
+      }
+      continue;
+    }
+
+    Entity entity;
+    switch (object->fixedtype) {
+      case DWG_TYPE_LINE:
+        entity = convertLine(object->tio.entity->tio.LINE);
+        break;
+      case DWG_TYPE_ARC:
+        entity = convertArc(object->tio.entity->tio.ARC);
+        break;
+      case DWG_TYPE_CIRCLE:
+        entity = convertCircle(object->tio.entity->tio.CIRCLE);
+        break;
+      case DWG_TYPE_LWPOLYLINE:
+        entity = convertLwPolyline(object->tio.entity->tio.LWPOLYLINE);
+        break;
+      default:
+        if (!isStructuralMarker(object->fixedtype)) {
+          scene.unsupported[object->name != nullptr ? object->name : "?"] += 1;
+        }
+        continue;
+    }
+
+    entity.id = static_cast<uint64_t>(object->handle.value);
+    entity.layer = layerNameOf(&dwg, object);
+
+    if (inModelSpace) {
+      scene.entities.push_back(std::move(entity));
+    } else {
+      scene.blocks[ownerBlock].entities.push_back(std::move(entity));
+    }
+  }
+
+  scene.ok = true;
+  dwg_free(&dwg);
+  return scene;
+}
+
+}  // namespace dwgapp

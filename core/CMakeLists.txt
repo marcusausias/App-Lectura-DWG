@@ -12,6 +12,9 @@ add_library(dwgcore STATIC
   src/polyline.cpp
   src/ocs.cpp
   src/spline.cpp
+  src/transform.cpp
+  src/entity.cpp
+  src/flatten.cpp
 )
 
 target_include_directories(dwgcore PUBLIC include)

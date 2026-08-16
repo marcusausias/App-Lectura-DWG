@@ -1,3 +1,7 @@
 add_executable(dwgcore_tests test_geometry.cpp)
 target_link_libraries(dwgcore_tests PRIVATE dwgcore)
 add_test(NAME dwgcore_tests COMMAND dwgcore_tests)
+
+add_executable(dwgcore_transform_tests test_transform.cpp)
+target_link_libraries(dwgcore_transform_tests PRIVATE dwgcore)
+add_test(NAME dwgcore_transform_tests COMMAND dwgcore_transform_tests)

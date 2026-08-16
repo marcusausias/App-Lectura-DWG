@@ -30,6 +30,7 @@ set_target_properties(redwg PROPERTIES
 add_library(dwgjni SHARED
   dwg_jni.cpp
   dwg_document.cpp
+  dwg_extract.cpp
 )
 
 target_link_libraries(dwgjni PRIVATE dwgcore redwg log m)
