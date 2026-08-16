@@ -58,6 +58,11 @@ struct Entity {
   // interfaz debe advertirlo antes de dar la medida por buena.
   bool approximated = false;
 
+  // Solo para EntityType::Text. La posición es el primer vértice.
+  std::string text;
+  double textHeight = 0.0;
+  double textRotation = 0.0;
+
   Bounds bounds;
 
   // Ruta de bloques desde la que llegó, para poder rastrear de dónde sale cada
@@ -90,5 +95,18 @@ double entityArea(const Entity& entity);
 Entity makeLine(Vec2 start, Vec2 end);
 Entity makeCircle(Vec2 center, double radius);
 Entity makeArc(Vec2 center, double radius, double startAngle, double endAngle);
+Entity makePolyline(std::vector<PolyVertex> vertices, bool closed);
+
+// Elipse o arco de elipse.
+//
+// `majorAxis` es el vector del centro al extremo del eje mayor, y `ratio` la
+// proporción entre el eje menor y el mayor. `startParam` y `endParam` son
+// ángulos paramétricos, no ángulos reales sobre la elipse: es como los guarda
+// el DWG y confundirlos deforma el trazado.
+//
+// Una elipse no se puede representar con bulges, así que sale ya teselada y
+// marcada como aproximada.
+Entity makeEllipse(Vec2 center, Vec2 majorAxis, double ratio, double startParam,
+                   double endParam, double maxSagitta);
 
 }  // namespace dwgcore

@@ -65,7 +65,14 @@ for abi in "${ABIS[@]}"; do
     -DLIBREDWG_DISABLE_WRITE=ON \
     -DLIBREDWG_DISABLE_JSON=ON \
     -DDISABLE_WERROR=ON \
+    -DENABLE_LTO=OFF \
     -DCMAKE_C_FLAGS="-ffunction-sections -fdata-sections"
+
+  # ENABLE_LTO viene activado por defecto y en el equipo se veía "IPO / LTO
+  # enabled". Cruzando con el NDK, el formato de objeto que deja LTO en el
+  # archivo estático choca con el --gc-sections que aplicamos al enlazar
+  # libdwgjni.so, así que se desactiva aquí. DISABLE_WERROR evita que un aviso
+  # nuevo del clang del NDK tumbe toda la compilación.
 
   cmake --build "$BUILD" --target redwg -j"$(nproc)"
 

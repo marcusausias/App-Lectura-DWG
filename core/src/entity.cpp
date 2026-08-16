@@ -170,4 +170,51 @@ Entity makeArc(Vec2 center, double radius, double startAngle, double endAngle) {
   return entity;
 }
 
+Entity makePolyline(std::vector<PolyVertex> vertices, bool closed) {
+  Entity entity;
+  entity.type = EntityType::Polyline;
+  entity.closed = closed;
+  entity.vertices = std::move(vertices);
+  updateBounds(entity);
+  return entity;
+}
+
+Entity makeEllipse(Vec2 center, Vec2 majorAxis, double ratio, double startParam,
+                   double endParam, double maxSagitta) {
+  Entity entity;
+  entity.type = EntityType::Ellipse;
+  entity.approximated = true;
+
+  const double majorRadius = length(majorAxis);
+  if (majorRadius <= 0.0) {
+    updateBounds(entity);
+    return entity;
+  }
+
+  // El eje menor es perpendicular al mayor, escalado por la proporción.
+  const Vec2 minorAxis = perpLeft(majorAxis) * ratio;
+
+  double sweep = endParam - startParam;
+  while (sweep <= 0.0) sweep += kTwoPi;
+  entity.closed = sweep >= kTwoPi - 1e-9;
+
+  // El número de tramos se calcula sobre el radio mayor, que es el caso
+  // desfavorable: así ningún punto de la elipse se desvía más de lo permitido.
+  const double cosLimit = std::clamp(1.0 - maxSagitta / majorRadius, -1.0, 1.0);
+  const double maxStep = 2.0 * std::acos(cosLimit);
+  int segments = maxStep > 0.0 ? static_cast<int>(std::ceil(sweep / maxStep)) : 1;
+  segments = std::clamp(segments, 8, 512);
+
+  const int count = entity.closed ? segments : segments + 1;
+  entity.vertices.reserve(static_cast<size_t>(count));
+  for (int i = 0; i < count; ++i) {
+    const double t = startParam + sweep * (static_cast<double>(i) / segments);
+    const Vec2 point = center + majorAxis * std::cos(t) + minorAxis * std::sin(t);
+    entity.vertices.push_back({point, 0.0});
+  }
+
+  updateBounds(entity);
+  return entity;
+}
+
 }  // namespace dwgcore

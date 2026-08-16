@@ -21,6 +21,10 @@ using dwgcore::Vec3;
 
 bool isFatal(int error) { return error >= DWG_ERR_CRITICAL; }
 
+// Desviación máxima al teselar lo que no se puede describir con un bulge.
+// Está en unidades de dibujo, así que en un plano en metros son 0,1 mm.
+constexpr double kMaxSagitta = 0.0001;
+
 std::string readText(void* entity, const char* entityName, const char* field) {
   char* text = nullptr;
   int isNew = 0;
@@ -94,6 +98,164 @@ Entity convertLwPolyline(const Dwg_Entity_LWPOLYLINE* polyline) {
   return entity;
 }
 
+Entity convertEllipse(const Dwg_Entity_ELLIPSE* ellipse, double maxSagitta) {
+  const Vec2 center = toWorld(ellipse->center.x, ellipse->center.y,
+                              ellipse->center.z, ellipse->extrusion);
+  // sm_axis es el vector del centro al extremo del eje mayor, relativo al
+  // centro, así que se rota pero no se traslada.
+  const Vec2 majorTip = toWorld(ellipse->sm_axis.x, ellipse->sm_axis.y,
+                                ellipse->sm_axis.z, ellipse->extrusion);
+  const Vec2 majorAxis = majorTip - toWorld(0.0, 0.0, 0.0, ellipse->extrusion);
+
+  return dwgcore::makeEllipse(center, majorAxis, ellipse->axis_ratio,
+                              ellipse->start_angle, ellipse->end_angle,
+                              maxSagitta);
+}
+
+Entity convertSpline(const Dwg_Entity_SPLINE* spline, double maxSagitta) {
+  // El DWG puede describir una spline por puntos de control o por puntos de
+  // paso. Solo la primera forma es una B-spline evaluable; la segunda se
+  // aproxima uniendo los puntos por los que pasa, que es lo que se ve dibujado.
+  if (spline->num_ctrl_pts >= 2 && spline->num_knots > 0) {
+    std::vector<Vec2> control;
+    control.reserve(spline->num_ctrl_pts);
+    for (unsigned long i = 0; i < spline->num_ctrl_pts; ++i) {
+      control.push_back({spline->ctrl_pts[i].x, spline->ctrl_pts[i].y});
+    }
+
+    std::vector<double> knots;
+    knots.reserve(spline->num_knots);
+    for (unsigned long i = 0; i < spline->num_knots; ++i) {
+      knots.push_back(spline->knots[i]);
+    }
+
+    const int degree = spline->degree > 0 ? spline->degree : 3;
+    // Muestreo proporcional al número de puntos de control: una spline con
+    // muchos tramos necesita más muestras para no perder su forma.
+    const int samples =
+        std::min(1024, std::max(32, static_cast<int>(control.size()) * 16));
+
+    std::vector<Vec2> sampled =
+        dwgcore::tessellateBSpline(control, knots, degree, samples);
+
+    std::vector<PolyVertex> vertices;
+    vertices.reserve(sampled.size());
+    for (const Vec2& point : sampled) vertices.push_back({point, 0.0});
+
+    Entity entity = dwgcore::makePolyline(std::move(vertices), spline->closed_b);
+    entity.type = EntityType::Spline;
+    entity.approximated = true;
+    return entity;
+  }
+
+  std::vector<PolyVertex> vertices;
+  vertices.reserve(spline->num_fit_pts);
+  for (unsigned long i = 0; i < spline->num_fit_pts; ++i) {
+    vertices.push_back({{spline->fit_pts[i].x, spline->fit_pts[i].y}, 0.0});
+  }
+  Entity entity = dwgcore::makePolyline(std::move(vertices), spline->closed_b);
+  entity.type = EntityType::Spline;
+  entity.approximated = true;
+  (void)maxSagitta;
+  return entity;
+}
+
+Entity convertPoint(const Dwg_Entity_POINT* point) {
+  Entity entity;
+  entity.type = EntityType::Point;
+  entity.vertices = {{toWorld(point->x, point->y, point->z, point->extrusion), 0.0}};
+  dwgcore::updateBounds(entity);
+  return entity;
+}
+
+Entity convertSolid(const Dwg_Entity_SOLID* solid) {
+  // Los cuatro vértices de un SOLID no van en orden de recorrido: el tercero y
+  // el cuarto están cruzados. Usarlos tal cual dibuja un lazo con forma de
+  // reloj de arena en vez del cuadrilátero relleno.
+  const double z = solid->elevation;
+  std::vector<PolyVertex> vertices = {
+      {toWorld(solid->corner1.x, solid->corner1.y, z, solid->extrusion), 0.0},
+      {toWorld(solid->corner2.x, solid->corner2.y, z, solid->extrusion), 0.0},
+      {toWorld(solid->corner4.x, solid->corner4.y, z, solid->extrusion), 0.0},
+      {toWorld(solid->corner3.x, solid->corner3.y, z, solid->extrusion), 0.0},
+  };
+  Entity entity = dwgcore::makePolyline(std::move(vertices), /*closed=*/true);
+  entity.type = EntityType::Hatch;  // Se dibuja relleno, como un sombreado.
+  return entity;
+}
+
+Entity convertText(Dwg_Entity_TEXT* text) {
+  Entity entity;
+  entity.type = EntityType::Text;
+  entity.vertices = {
+      {toWorld(text->ins_pt.x, text->ins_pt.y, text->elevation, text->extrusion),
+       0.0}};
+  entity.text = readText(text, "TEXT", "text_value");
+  entity.textHeight = text->height;
+  entity.textRotation = text->rotation;
+  dwgcore::updateBounds(entity);
+  return entity;
+}
+
+Entity convertMText(Dwg_Entity_MTEXT* mtext) {
+  Entity entity;
+  entity.type = EntityType::Text;
+  entity.vertices = {{toWorld(mtext->ins_pt.x, mtext->ins_pt.y, mtext->ins_pt.z,
+                              mtext->extrusion),
+                      0.0}};
+  entity.text = readText(mtext, "MTEXT", "text");
+  entity.textHeight = mtext->text_height;
+  // MTEXT no guarda un ángulo, sino el vector que marca la dirección del texto.
+  entity.textRotation = std::atan2(mtext->x_axis_dir.y, mtext->x_axis_dir.x);
+  dwgcore::updateBounds(entity);
+  return entity;
+}
+
+// Los vértices de una POLYLINE_2D no viven dentro de ella: son entidades
+// VERTEX_2D independientes que la tienen como propietaria. Hay que recogerlas
+// aparte y emparejarlas por el handle del propietario.
+using VertexMap = std::map<unsigned long, std::vector<PolyVertex>>;
+
+Entity convertPolyline2D(const Dwg_Entity_POLYLINE_2D* polyline,
+                         std::vector<PolyVertex> vertices) {
+  // Bit 1 del código 70.
+  const bool closed = (polyline->flag & 1) != 0;
+  for (PolyVertex& vertex : vertices) {
+    vertex.position = toWorld(vertex.position.x, vertex.position.y,
+                              polyline->elevation, polyline->extrusion);
+  }
+  return dwgcore::makePolyline(std::move(vertices), closed);
+}
+
+// Todas las variantes de cota comparten la misma cabecera de campos, definida
+// por la macro DIMENSION_COMMON de LibreDWG, de modo que el handle del bloque
+// se puede leer a través de cualquiera de ellas.
+bool isDimension(int fixedtype) {
+  switch (fixedtype) {
+    case DWG_TYPE_DIMENSION_ORDINATE:
+    case DWG_TYPE_DIMENSION_LINEAR:
+    case DWG_TYPE_DIMENSION_ALIGNED:
+    case DWG_TYPE_DIMENSION_ANG3PT:
+    case DWG_TYPE_DIMENSION_ANG2LN:
+    case DWG_TYPE_DIMENSION_RADIUS:
+    case DWG_TYPE_DIMENSION_DIAMETER:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::string dimensionBlockName(Dwg_Data* dwg, const Dwg_Object* object) {
+  const auto* dimension = reinterpret_cast<const Dwg_DIMENSION_common*>(
+      object->tio.entity->tio.DIMENSION_LINEAR);
+  if (dimension == nullptr || dimension->block == nullptr) return {};
+
+  Dwg_Object* header = dwg_ref_object(dwg, dimension->block);
+  if (header == nullptr || header->tio.object == nullptr) return {};
+  if (header->fixedtype != DWG_TYPE_BLOCK_HEADER) return {};
+  return readText(header->tio.object->tio.BLOCK_HEADER, "BLOCK_HEADER", "name");
+}
+
 // Nombre del bloque al que apunta un INSERT.
 std::string blockNameOf(Dwg_Data* dwg, const Dwg_Entity_INSERT* insert) {
   if (insert->block_header == nullptr) return {};
@@ -131,6 +293,8 @@ bool isStructuralMarker(int fixedtype) {
     case DWG_TYPE_SEQEND:
     case DWG_TYPE_ATTDEF:
     case DWG_TYPE_ATTRIB:
+    // Los vértices ya se han consumido al montar su polilínea.
+    case DWG_TYPE_VERTEX_2D:
       return true;
     default:
       return false;
@@ -185,6 +349,25 @@ ExtractedScene extractScene(const std::string& path) {
     }
   }
 
+  // Vértices de las polilíneas antiguas, agrupados por la polilínea que los
+  // posee. Se guardan en el orden en que aparecen en el archivo, que es el
+  // orden de recorrido de la polilínea.
+  VertexMap vertexOwners;
+  for (unsigned long i = 0; i < dwg.num_objects; ++i) {
+    Dwg_Object* object = &dwg.object[i];
+    if (object->supertype != DWG_SUPERTYPE_ENTITY) continue;
+    if (object->fixedtype != DWG_TYPE_VERTEX_2D) continue;
+    if (object->tio.entity == nullptr) continue;
+
+    const Dwg_Entity_VERTEX_2D* vertex = object->tio.entity->tio.VERTEX_2D;
+    if (vertex == nullptr) continue;
+
+    // La conversión a mundo se hace después, con la extrusión de la polilínea:
+    // aquí solo se guardan las coordenadas locales.
+    vertexOwners[ownerHandleOf(&dwg, object)].push_back(
+        {{vertex->point.x, vertex->point.y}, vertex->bulge});
+  }
+
   const Dwg_Object* modelSpace = dwg_model_space_object(&dwg);
   const unsigned long modelSpaceHandle =
       modelSpace != nullptr ? static_cast<unsigned long>(modelSpace->handle.value)
@@ -208,6 +391,25 @@ ExtractedScene extractScene(const std::string& path) {
       if (found == blockNameByHandle.end()) continue;
       ownerBlock = found->second;
       if (scene.blocks.find(ownerBlock) == scene.blocks.end()) continue;
+    }
+
+    // Una cota no guarda sus líneas, flechas y texto: los guarda en un bloque
+    // anónimo (*D1, *D2…) al que apunta. Tratándola como una inserción de ese
+    // bloque, las cotas se dibujan reutilizando el mismo aplanado que el resto.
+    if (isDimension(object->fixedtype)) {
+      const std::string blockName = dimensionBlockName(&dwg, object);
+      if (blockName.empty()) {
+        scene.unsupported[object->name != nullptr ? object->name : "?"] += 1;
+        continue;
+      }
+      dwgcore::InsertRef ref;
+      ref.blockName = blockName;
+      if (inModelSpace) {
+        scene.inserts.push_back(std::move(ref));
+      } else {
+        scene.blocks[ownerBlock].inserts.push_back(std::move(ref));
+      }
+      continue;
     }
 
     if (object->fixedtype == DWG_TYPE_INSERT) {
@@ -234,6 +436,32 @@ ExtractedScene extractScene(const std::string& path) {
         break;
       case DWG_TYPE_LWPOLYLINE:
         entity = convertLwPolyline(object->tio.entity->tio.LWPOLYLINE);
+        break;
+      case DWG_TYPE_POLYLINE_2D: {
+        const auto vertices =
+            vertexOwners.find(static_cast<unsigned long>(object->handle.value));
+        if (vertices == vertexOwners.end()) continue;
+        entity = convertPolyline2D(object->tio.entity->tio.POLYLINE_2D,
+                                   vertices->second);
+        break;
+      }
+      case DWG_TYPE_ELLIPSE:
+        entity = convertEllipse(object->tio.entity->tio.ELLIPSE, kMaxSagitta);
+        break;
+      case DWG_TYPE_SPLINE:
+        entity = convertSpline(object->tio.entity->tio.SPLINE, kMaxSagitta);
+        break;
+      case DWG_TYPE_POINT:
+        entity = convertPoint(object->tio.entity->tio.POINT);
+        break;
+      case DWG_TYPE_SOLID:
+        entity = convertSolid(object->tio.entity->tio.SOLID);
+        break;
+      case DWG_TYPE_TEXT:
+        entity = convertText(object->tio.entity->tio.TEXT);
+        break;
+      case DWG_TYPE_MTEXT:
+        entity = convertMText(object->tio.entity->tio.MTEXT);
         break;
       default:
         if (!isStructuralMarker(object->fixedtype)) {
