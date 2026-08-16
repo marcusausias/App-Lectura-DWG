@@ -1,0 +1,15 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+
+# LibreDWG: se clona y compila con tools/build-libredwg-android.sh
+vendor/
+
+# Planos de prueba: pesan demasiado para el repositorio.
+# Se referencian desde Drive (ver RETOMAR-PROYECTO.md).
+*.dwg
+*.dxf
+*.bak
