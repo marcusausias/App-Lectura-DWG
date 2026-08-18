@@ -12,6 +12,40 @@ data class PlanText(
     val layerId: Int,
 )
 
+/** Tipo de punto notable al que se ha enganchado el dedo. */
+enum class SnapType {
+    NONE, ENDPOINT, INTERSECTION, MIDPOINT, PERPENDICULAR, ON_EDGE;
+
+    val label: String
+        get() = when (this) {
+            ENDPOINT -> "extremo"
+            INTERSECTION -> "intersección"
+            MIDPOINT -> "punto medio"
+            PERPENDICULAR -> "perpendicular"
+            ON_EDGE -> "sobre línea"
+            NONE -> ""
+        }
+
+    companion object {
+        fun fromCode(code: Int): SnapType = entries.getOrElse(code) { NONE }
+    }
+}
+
+/** Resultado de enganchar: dónde y a qué. */
+data class SnapHit(
+    val type: SnapType,
+    val x: Double,
+    val y: Double,
+    val entityIndex: Int,
+)
+
+/** Longitud de una entidad del plano, con su recorrido para resaltarla. */
+data class EntityMeasure(
+    val length: Double,
+    val approximate: Boolean,
+    val points: List<Pair<Double, Double>>,
+)
+
 /** Un tramo del buffer de vértices correspondiente a una capa. */
 data class RenderBatch(
     val layerId: Int,
@@ -76,6 +110,64 @@ class NativePlan private constructor(private var handle: Long) : AutoCloseable {
         PlanNative.getVisibleTexts(handle, minX, minY, maxX, maxY, minHeight, limit)
             ?.toList() ?: emptyList()
 
+    /**
+     * Engancha al punto notable más cercano.
+     *
+     * [radius] va en unidades de dibujo; se calcula desde un radio en píxeles
+     * para que enganchar se sienta igual de fácil a cualquier zoom.
+     *
+     * [reference] es el punto anterior de la medición en curso, necesario para
+     * la perpendicular.
+     */
+    fun snapAt(
+        x: Double,
+        y: Double,
+        radius: Double,
+        reference: Pair<Double, Double>? = null,
+        hiddenLayers: IntArray = IntArray(0),
+    ): SnapHit? {
+        val raw = PlanNative.snapAt(
+            handle, x, y, radius,
+            reference?.first ?: 0.0, reference?.second ?: 0.0, reference != null,
+            hiddenLayers,
+        ) ?: return null
+
+        return SnapHit(
+            type = SnapType.fromCode(raw[0].toInt()),
+            x = raw[1],
+            y = raw[2],
+            entityIndex = raw[3].toInt(),
+        )
+    }
+
+    /** Entidad tocada, o null si no hay ninguna dentro del radio. */
+    fun pickEntity(
+        x: Double,
+        y: Double,
+        radius: Double,
+        hiddenLayers: IntArray = IntArray(0),
+    ): Int? = PlanNative.pickEntity(handle, x, y, radius, hiddenLayers).takeIf { it >= 0 }
+
+    /** Longitud de una entidad siguiéndola entera, con los arcos exactos. */
+    fun measureEntity(entityIndex: Int): EntityMeasure? {
+        val raw = PlanNative.measureEntity(handle, entityIndex) ?: return null
+        if (raw.size < 3) return null
+
+        val count = raw[2].toInt()
+        val points = ArrayList<Pair<Double, Double>>(count)
+        for (i in 0 until count) {
+            points.add(raw[3 + i * 2] to raw[4 + i * 2])
+        }
+        return EntityMeasure(length = raw[0], approximate = raw[1] != 0.0, points = points)
+    }
+
+    /** Nombre del símbolo del que procede la entidad, si viene de alguno. */
+    fun symbolName(entityIndex: Int): String? = PlanNative.countSymbolName(handle, entityIndex)
+
+    /** Cuántas veces está colocado ese símbolo en el plano. */
+    fun symbolInstances(entityIndex: Int): Int =
+        PlanNative.countSymbolInstances(handle, entityIndex)
+
     override fun close() {
         if (handle != 0L) {
             PlanNative.closePlan(handle)
@@ -138,4 +230,27 @@ object PlanNative {
         minHeight: Double,
         limit: Int,
     ): Array<PlanText>?
+
+    external fun snapAt(
+        handle: Long,
+        x: Double,
+        y: Double,
+        radius: Double,
+        referenceX: Double,
+        referenceY: Double,
+        hasReference: Boolean,
+        hiddenLayers: IntArray,
+    ): DoubleArray?
+
+    external fun pickEntity(
+        handle: Long,
+        x: Double,
+        y: Double,
+        radius: Double,
+        hiddenLayers: IntArray,
+    ): Int
+
+    external fun measureEntity(handle: Long, entityIndex: Int): DoubleArray?
+    external fun countSymbolName(handle: Long, entityIndex: Int): String?
+    external fun countSymbolInstances(handle: Long, entityIndex: Int): Int
 }

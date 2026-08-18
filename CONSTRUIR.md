@@ -80,23 +80,66 @@ ruta en `local.properties` o fija `ndkVersion` en `app/build.gradle.kts`.
 
 ---
 
-## Paso 3 — Comprobar que lee tus planos
+## Paso 3 — Comprobar que lee y dibuja tus planos
 
-Abre la app y pulsa **Abrir un DWG**. Es la pantalla de validación de la Fase 0:
-te dice versión del archivo, número de entidades, capas, bloques, referencias
-externas y **cuánto ha tardado en leerlo**.
+Abre la app, pulsa **Abrir** y elige un DWG. La primera vez tarda en procesarlo;
+a partir de ahí se abre desde caché y es casi instantáneo.
 
-Lo que hay que mirar:
+Lo que hay que mirar, por orden de importancia:
 
-- **Versión**: debería reconocerla, de r13 a r2018.
-- **Tiempo**: en el equipo de desarrollo, un archivo de 11.000 objetos tarda
-  39 ms. En un móvil cuenta con bastante más, pero si un plano tuyo pasa de
-  10 segundos hay que replantear el enfoque.
-- **Entidades**: si sale muy por debajo de lo que esperas del plano, hay tipos
-  de entidad sin convertir todavía.
-- **Referencias externas**: si tu plano tiene xrefs deberían aparecer con su
-  ruta completa. Ojo, serán rutas de Windows del estilo `N:\Obra\...` que no
-  existen en el móvil; resolverlas es el trabajo de la Fase 3.
+1. **Que se vea como en AutoCAD.** Compáralo con el PDF del mismo plano. Lo que
+   delata un fallo de conversión es geometría desplazada, en espejo, o que falte
+   una parte del dibujo.
+2. **Zoom profundo sobre un detalle.** Las líneas no deben temblar ni vibrar al
+   acercarse. Si tiemblan, hay un problema de precisión con las coordenadas.
+3. **Tiempo de la primera apertura.** En el equipo de desarrollo, un plano de
+   81.000 entidades tarda 110 ms en procesarse y 25 ms en reabrirse. En un móvil
+   cuenta con bastante más, pero si un plano tuyo pasa de 10 segundos hay que
+   replantear el enfoque.
+4. **Capas.** *Capas* abre la lista; apagar o aislar una debe ocultar lo mismo
+   que en AutoCAD.
+5. **Fondo.** Alterna claro y oscuro; a pleno sol suele leerse mejor el claro.
+
+Si el plano se abre pero sale muy vacío, es que trae tipos de entidad que
+todavía no se convierten. Quedan pendientes los sombreados (HATCH) y las
+directrices (LEADER).
+
+**Referencias externas:** todavía no se resuelven. Un plano con xrefs se abrirá
+sin el contenido referenciado. Es el trabajo de la Fase 3, y sus rutas serán de
+Windows (`N:\Obra\...`), que no existen en el móvil.
+
+---
+
+## Paso 4 — Probar la medición
+
+Con un plano abierto, en la barra de abajo:
+
+| Herramienta | Qué hace |
+|---|---|
+| **Distancia** | Dos toques y se cierra sola |
+| **Polilínea** | Toques seguidos, luego *Cerrar*; suma los tramos |
+| **Superficie** | Marca el contorno y *Cerrar*; área por la fórmula de Gauss |
+| **Seguir** | Toca una línea del plano y la mide entera, arcos incluidos |
+| **Contar** | Toca un símbolo y dice cuántos iguales hay |
+
+Al apoyar el dedo aparece una cruz amarilla con el punto al que engancharía y su
+tipo (extremo, intersección, punto medio…). Si mueves el dedo más de 6 px, el
+gesto pasa a ser paneo y la vista previa desaparece.
+
+**La prueba que de verdad importa:** busca una cota acotada en tu plano, mide esa
+misma distancia con la herramienta y comprueba que **coincide con el valor
+escrito en la cota**. Si no coincide, hay un problema de escala o de enganche y
+hay que resolverlo antes que cualquier otra cosa.
+
+Lo que conviene comprobar además:
+
+- Enganchar a una esquina debe dar la esquina exacta, no un punto cercano.
+- Con una capa apagada, no debe poder engancharse a su geometría.
+- Una medición sobre una spline o una elipse debe aparecer marcada
+  **(aprox.)**: esa geometría llega ya teselada y su longitud es buena pero no
+  exacta.
+- *Contar* sobre un símbolo repetido debe dar el número correcto. En el archivo
+  de pruebas del proyecto salen 54 rociadores y 28 laterales.
 
 ---
 
@@ -110,9 +153,12 @@ cmake -S core -B build-core -DDWGCORE_BUILD_TESTS=ON
 cmake --build build-core
 ./build-core/tests/dwgcore_tests
 ./build-core/tests/dwgcore_transform_tests
+./build-core/tests/dwgcore_scene_tests
+./build-core/tests/dwgcore_render_tests
+./build-core/tests/dwgcore_snap_tests
 ```
 
-Ambos deben terminar con `0 fallos`. Si tocas algo de geometría, esto es lo
+Todos deben terminar con `0 fallos`. Si tocas algo de geometría, esto es lo
 primero que hay que volver a pasar.
 
 ---

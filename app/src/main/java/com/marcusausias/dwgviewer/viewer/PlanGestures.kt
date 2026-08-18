@@ -19,9 +19,17 @@ fun Modifier.planGestures(
     onPan: (Float, Float) -> Unit,
     onZoom: (focusX: Float, focusY: Float, factor: Float) -> Unit,
     onTap: (Float, Float) -> Unit,
+    onPreview: (Float, Float) -> Unit = { _, _ -> },
+    onPreviewCancel: () -> Unit = {},
 ): Modifier = pointerInput(Unit) {
     awaitEachGesture {
         val first = awaitFirstDown(requireUnconsumed = false)
+
+        // Mientras el dedo está apoyado y quieto se enseña dónde engancharía.
+        // Es la única forma de saberlo antes de levantarlo, porque el propio
+        // dedo tapa el punto.
+        onPreview(first.position.x, first.position.y)
+        var previewing = true
 
         var totalMovement = 0f
         var previousCentroid = first.position
@@ -68,6 +76,17 @@ fun Modifier.planGestures(
             if (dx != 0f || dy != 0f) onPan(dx, dy)
 
             totalMovement += abs(dx) + abs(dy)
+
+            if (previewing) {
+                if (totalMovement > Camera.TAP_SLOP_PX || active.size > 1) {
+                    // Ya no es un toque sino un gesto de mover o hacer zoom.
+                    previewing = false
+                    onPreviewCancel()
+                } else {
+                    onPreview(centroid.x, centroid.y)
+                }
+            }
+
             previousCentroid = centroid
             previousSpread = spread
 
@@ -77,6 +96,8 @@ fun Modifier.planGestures(
         // El mismo umbral de 6 px que ya funcionaba en VISOR 3DS: sin él, el
         // temblor normal del dedo convierte cualquier intento de mover el plano
         // en un toque accidental.
+        if (previewing) onPreviewCancel()
+
         if (totalMovement <= Camera.TAP_SLOP_PX) {
             onTap(first.position.x, first.position.y)
         }

@@ -6,12 +6,15 @@
 
 #include <jni.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "dwg_extract.h"
 #include "dwgcore/cache.h"
+#include "dwgcore/measure.h"
+#include "dwgcore/snap.h"
 #include "dwgcore/render.h"
 #include "dwgcore/scene.h"
 
@@ -27,6 +30,20 @@ struct OpenPlan {
 // antes de tiempo deja la vista dibujando sobre memoria liberada.
 OpenPlan* fromHandle(jlong handle) {
   return reinterpret_cast<OpenPlan*>(handle);
+}
+
+// Lista de capas ocultas. Se copia porque el array de Java puede moverse en
+// cuanto se ejecute el recolector de basura.
+std::vector<uint16_t> toLayerList(JNIEnv* env, jintArray layers) {
+  std::vector<uint16_t> result;
+  if (layers == nullptr) return result;
+
+  const jsize count = env->GetArrayLength(layers);
+  std::vector<jint> raw(static_cast<size_t>(count));
+  env->GetIntArrayRegion(layers, 0, count, raw.data());
+  result.reserve(raw.size());
+  for (jint value : raw) result.push_back(static_cast<uint16_t>(value));
+  return result;
 }
 
 std::string toString(JNIEnv* env, jstring text) {
@@ -209,6 +226,107 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_getVisibleTexts(
     env->DeleteLocalRef(found[i]);
   }
   return result;
+}
+
+
+// Enganche del dedo al punto notable más cercano.
+//
+// `radius` llega ya en unidades de dibujo: quien llama lo obtiene de un radio
+// en píxeles, porque lo que tiene que sentirse constante es la distancia en
+// pantalla, no en el dibujo.
+//
+// Devuelve {tipo, x, y, índiceDeEntidad} o null si no hay nada que enganchar.
+JNIEXPORT jdoubleArray JNICALL
+Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_snapAt(
+    JNIEnv* env, jobject, jlong handle, jdouble x, jdouble y, jdouble radius,
+    jdouble referenceX, jdouble referenceY, jboolean hasReference,
+    jintArray hiddenLayers) {
+  OpenPlan* plan = fromHandle(handle);
+  if (plan == nullptr) return nullptr;
+
+  dwgcore::SnapOptions options;
+  options.radius = radius;
+  options.hasReference = hasReference == JNI_TRUE;
+  options.reference = {referenceX, referenceY};
+
+  const dwgcore::SnapResult result =
+      dwgcore::snap(plan->scene, {x, y}, options, toLayerList(env, hiddenLayers));
+  if (!result.found()) return nullptr;
+
+  const jdouble values[4] = {static_cast<jdouble>(result.type), result.point.x,
+                             result.point.y,
+                             static_cast<jdouble>(result.entityIndex)};
+  jdoubleArray out = env->NewDoubleArray(4);
+  if (out == nullptr) return nullptr;
+  env->SetDoubleArrayRegion(out, 0, 4, values);
+  return out;
+}
+
+// Entidad tocada, o -1 si no hay ninguna dentro del radio.
+JNIEXPORT jint JNICALL
+Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_pickEntity(
+    JNIEnv* env, jobject, jlong handle, jdouble x, jdouble y, jdouble radius,
+    jintArray hiddenLayers) {
+  OpenPlan* plan = fromHandle(handle);
+  if (plan == nullptr) return -1;
+
+  const uint32_t index = dwgcore::pickEntity(plan->scene, {x, y}, radius,
+                                             toLayerList(env, hiddenLayers));
+  return index == dwgcore::kNoEntity ? -1 : static_cast<jint>(index);
+}
+
+// Longitud de una entidad siguiéndola entera, con sus arcos exactos.
+// Devuelve {longitud, esAproximada, nºPuntos, x0, y0, x1, y1, ...}.
+JNIEXPORT jdoubleArray JNICALL
+Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_measureEntity(
+    JNIEnv* env, jobject, jlong handle, jint entityIndex) {
+  OpenPlan* plan = fromHandle(handle);
+  if (plan == nullptr || entityIndex < 0) return nullptr;
+
+  const dwgcore::Measurement measurement =
+      dwgcore::measureEntity(plan->scene, static_cast<uint32_t>(entityIndex));
+
+  // Un tope de puntos: una spline muy teselada no necesita viajar entera solo
+  // para dibujar el resaltado de lo que se ha medido.
+  const size_t maxPoints = 2000;
+  const size_t pointCount = std::min(measurement.points.size(), maxPoints);
+
+  std::vector<jdouble> values;
+  values.reserve(3 + pointCount * 2);
+  values.push_back(measurement.value);
+  values.push_back(measurement.approximate ? 1.0 : 0.0);
+  values.push_back(static_cast<jdouble>(pointCount));
+  for (size_t i = 0; i < pointCount; ++i) {
+    values.push_back(measurement.points[i].x);
+    values.push_back(measurement.points[i].y);
+  }
+
+  jdoubleArray out = env->NewDoubleArray(static_cast<jsize>(values.size()));
+  if (out == nullptr) return nullptr;
+  env->SetDoubleArrayRegion(out, 0, static_cast<jsize>(values.size()), values.data());
+  return out;
+}
+
+// Cuántos símbolos iguales al de esta entidad hay en el plano.
+// Devuelve el nombre del símbolo, o null si la entidad no viene de ninguno.
+JNIEXPORT jstring JNICALL
+Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_countSymbolName(
+    JNIEnv* env, jobject, jlong handle, jint entityIndex) {
+  OpenPlan* plan = fromHandle(handle);
+  if (plan == nullptr || entityIndex < 0) return nullptr;
+
+  const dwgcore::Measurement measurement =
+      dwgcore::measureCount(plan->scene, static_cast<uint32_t>(entityIndex));
+  if (measurement.count == 0) return nullptr;
+  return env->NewStringUTF(measurement.label.c_str());
+}
+
+JNIEXPORT jint JNICALL
+Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_countSymbolInstances(
+    JNIEnv*, jobject, jlong handle, jint entityIndex) {
+  OpenPlan* plan = fromHandle(handle);
+  if (plan == nullptr || entityIndex < 0) return 0;
+  return dwgcore::measureCount(plan->scene, static_cast<uint32_t>(entityIndex)).count;
 }
 
 }  // extern "C"

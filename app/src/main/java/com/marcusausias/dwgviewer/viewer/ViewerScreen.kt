@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -43,8 +44,14 @@ fun ViewerScreen(model: ViewerViewModel = viewModel()) {
     val hiddenLayers by model.hiddenLayers.collectAsStateWithLifecycle()
     val texts by model.visibleTexts.collectAsStateWithLifecycle()
     val dark by model.darkBackground.collectAsStateWithLifecycle()
+    val measurements by model.measurements.collectAsStateWithLifecycle()
+    val pending by model.pending.collectAsStateWithLifecycle()
+    val snapPreview by model.snapPreview.collectAsStateWithLifecycle()
+    val decimals by model.decimals.collectAsStateWithLifecycle()
+    val unit by model.unit.collectAsStateWithLifecycle()
 
     var showLayerSheet by remember { mutableStateOf(false) }
+    var showMeasureSheet by remember { mutableStateOf(false) }
     var widthDp by remember { mutableStateOf(0) }
 
     val picker = rememberLauncherForActivityResult(
@@ -76,12 +83,26 @@ fun ViewerScreen(model: ViewerViewModel = viewModel()) {
                     texts = texts,
                     camera = camera,
                     color = if (dark) Color(0xFFE8E8E4) else Color(0xFF1A1C20),
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                // Las mediciones y los gestos van en la capa de más arriba para
+                // que ningún toque se quede por el camino.
+                MeasureOverlay(
+                    camera = camera,
+                    measurements = measurements,
+                    pending = pending,
+                    snap = snapPreview,
+                    decimals = decimals,
+                    unit = unit,
                     modifier = Modifier
                         .fillMaxSize()
                         .planGestures(
                             onPan = model::onPan,
                             onZoom = model::onZoom,
-                            onTap = { _, _ -> },
+                            onTap = model::onTap,
+                            onPreview = model::onHover,
+                            onPreviewCancel = { model.clearSnapPreview() },
                         ),
                 )
 
@@ -96,32 +117,71 @@ fun ViewerScreen(model: ViewerViewModel = viewModel()) {
                     onPick = { picker.launch(arrayOf("*/*")) },
                     onFit = model::fitToPlan,
                     onLayers = { showLayerSheet = true },
+                    onMeasurements = { showMeasureSheet = true },
                     onToggleBackground = model::toggleBackground,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .windowInsetsPadding(WindowInsets.safeDrawing),
                 )
+
+                if (ready != null) {
+                    MeasureToolbar(
+                        activeTool = pending.tool,
+                        pending = pending,
+                        onSelectTool = model::selectTool,
+                        onFinish = model::finishPending,
+                        onUndo = model::undo,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .windowInsetsPadding(WindowInsets.safeDrawing),
+                    )
+                }
             }
 
             // En pantalla ancha el panel se queda fijo; en móvil se abre como
             // hoja deslizante para no comerse el plano.
             val ready = state as? PlanState.Ready
             if (ready != null && widthDp >= WIDE_LAYOUT_DP) {
-                LayerPanel(
-                    layers = ready.layers,
-                    hiddenLayers = hiddenLayers,
-                    onToggle = model::toggleLayer,
-                    onIsolate = model::isolateLayer,
-                    onShowAll = model::showAllLayers,
+                Column(
                     modifier = Modifier
-                        .width(280.dp)
+                        .width(300.dp)
                         .fillMaxHeight()
                         .windowInsetsPadding(WindowInsets.safeDrawing),
-                )
+                ) {
+                    MeasurementList(
+                        measurements = measurements,
+                        decimals = decimals,
+                        unit = unit,
+                        onRename = model::renameMeasurement,
+                        onRemove = model::removeMeasurement,
+                        onClear = model::clearMeasurements,
+                    )
+                    LayerPanel(
+                        layers = ready.layers,
+                        hiddenLayers = hiddenLayers,
+                        onToggle = model::toggleLayer,
+                        onIsolate = model::isolateLayer,
+                        onShowAll = model::showAllLayers,
+                    )
+                }
             }
         }
 
         val ready = state as? PlanState.Ready
+        if (showMeasureSheet && ready != null && widthDp < WIDE_LAYOUT_DP) {
+            ModalBottomSheet(onDismissRequest = { showMeasureSheet = false }) {
+                MeasurementList(
+                    measurements = measurements,
+                    decimals = decimals,
+                    unit = unit,
+                    onRename = model::renameMeasurement,
+                    onRemove = model::removeMeasurement,
+                    onClear = model::clearMeasurements,
+                )
+            }
+        }
+
         if (showLayerSheet && ready != null && widthDp < WIDE_LAYOUT_DP) {
             ModalBottomSheet(onDismissRequest = { showLayerSheet = false }) {
                 LayerPanel(
@@ -142,6 +202,7 @@ private fun ViewerToolbar(
     onPick: () -> Unit,
     onFit: () -> Unit,
     onLayers: () -> Unit,
+    onMeasurements: () -> Unit,
     onToggleBackground: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -150,6 +211,7 @@ private fun ViewerToolbar(
         if (hasPlan) {
             TextButton(onClick = onFit) { Text("Encuadrar") }
             TextButton(onClick = onLayers) { Text("Capas") }
+            TextButton(onClick = onMeasurements) { Text("Medidas") }
             TextButton(onClick = onToggleBackground) { Text("Fondo") }
         }
     }
