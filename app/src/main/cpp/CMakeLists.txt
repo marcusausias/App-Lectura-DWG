@@ -31,6 +31,7 @@ add_library(dwgjni SHARED
   dwg_jni.cpp
   dwg_document.cpp
   dwg_extract.cpp
+  dwg_scene_jni.cpp
 )
 
 target_link_libraries(dwgjni PRIVATE dwgcore redwg log m)

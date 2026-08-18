@@ -9,3 +9,7 @@ add_test(NAME dwgcore_transform_tests COMMAND dwgcore_transform_tests)
 add_executable(dwgcore_scene_tests test_scene.cpp)
 target_link_libraries(dwgcore_scene_tests PRIVATE dwgcore)
 add_test(NAME dwgcore_scene_tests COMMAND dwgcore_scene_tests)
+
+add_executable(dwgcore_render_tests test_render.cpp)
+target_link_libraries(dwgcore_render_tests PRIVATE dwgcore)
+add_test(NAME dwgcore_render_tests COMMAND dwgcore_render_tests)
