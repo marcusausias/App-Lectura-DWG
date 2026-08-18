@@ -54,6 +54,15 @@ struct Entity {
   std::string layer;
   uint16_t layerId = 0;
 
+  // Símbolo del que procede, resuelto al montar la escena a partir de
+  // `blockPath`. 0 significa que la entidad está suelta en el espacio modelo.
+  uint16_t blockId = 0;
+
+  // Identifica la inserción concreta de la que salió esta entidad. Todas las
+  // líneas de una misma puerta comparten instancia, lo que permite seleccionar
+  // el símbolo entero de un toque y contar cuántos hay iguales.
+  uint32_t instanceId = 0;
+
   std::vector<PolyVertex> vertices;  // Coordenadas de mundo.
   bool closed = false;
 

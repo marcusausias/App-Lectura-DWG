@@ -19,6 +19,8 @@ add_library(dwgcore STATIC
   src/scene.cpp
   src/cache.cpp
   src/render.cpp
+  src/snap.cpp
+  src/measure.cpp
 )
 
 target_include_directories(dwgcore PUBLIC include)

@@ -12,11 +12,24 @@
 
 namespace dwgcore {
 
+// Símbolo del dibujo (un bloque de AutoCAD) y cuántas veces está colocado.
+//
+// El recuento es lo que responde a "¿cuántas puertas como esta hay?" sin
+// recorrer el plano entero cada vez que se pregunta.
+struct BlockInfo {
+  std::string name;
+  int instanceCount = 0;
+};
+
 struct Scene {
   // Nombres de capa sin repetir. Las entidades apuntan aquí por índice, que es
   // también como se agrupan los lotes de dibujo y como funciona el panel de
   // capas: encender o apagar una es marcar un índice.
   std::vector<std::string> layers;
+
+  // Símbolos, sin repetir. Las entidades apuntan aquí con `blockId`; el índice
+  // 0 está reservado para lo que no viene de ningún bloque.
+  std::vector<BlockInfo> blocks;
 
   std::vector<Entity> entities;
   Bounds bounds;

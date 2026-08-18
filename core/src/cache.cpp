@@ -8,7 +8,9 @@ namespace dwgcore {
 namespace {
 
 constexpr char kMagic[8] = {'D', 'W', 'G', 'C', 'A', 'C', 'H', 'E'};
-constexpr uint32_t kVersion = 1;
+// Al cambiar el formato se sube la versión: una caché escrita por una versión
+// anterior se descarta y se vuelve a generar, en lugar de leerse mal.
+constexpr uint32_t kVersion = 2;
 
 // Banderas empaquetadas en un byte por entidad.
 constexpr uint8_t kFlagClosed = 1 << 0;
@@ -117,6 +119,12 @@ bool writeCache(const std::string& path, const Scene& scene,
   out.value(static_cast<uint32_t>(scene.layers.size()));
   for (const std::string& layer : scene.layers) out.text(layer);
 
+  out.value(static_cast<uint32_t>(scene.blocks.size()));
+  for (const BlockInfo& block : scene.blocks) {
+    out.text(block.name);
+    out.value(static_cast<int32_t>(block.instanceCount));
+  }
+
   out.value(scene.bounds);
   out.value(static_cast<uint32_t>(scene.entities.size()));
   for (const Entity& entity : scene.entities) {
@@ -136,6 +144,8 @@ bool writeCache(const std::string& path, const Scene& scene,
     if (entity.bounds.valid) flags |= kFlagBoundsValid;
     out.value(flags);
     out.value(entity.layerId);
+    out.value(entity.blockId);
+    out.value(entity.instanceId);
     out.value(entity.id);
     out.value(entity.bounds.min);
     out.value(entity.bounds.max);
@@ -203,6 +213,21 @@ bool readCache(const std::string& path, const CacheStamp& expected, Scene& scene
     }
   }
 
+  uint32_t blockCount = 0;
+  if (!in.value(blockCount) || blockCount > 0xFFFF) {
+    std::fclose(file);
+    return false;
+  }
+  loaded.blocks.resize(blockCount);
+  for (BlockInfo& block : loaded.blocks) {
+    int32_t instances = 0;
+    if (!in.text(block.name, kMaxTextLength) || !in.value(instances)) {
+      std::fclose(file);
+      return false;
+    }
+    block.instanceCount = instances;
+  }
+
   uint32_t entityCount = 0;
   if (!in.value(loaded.bounds) || !in.value(entityCount) ||
       entityCount > kMaxEntities) {
@@ -215,6 +240,7 @@ bool readCache(const std::string& path, const CacheStamp& expected, Scene& scene
     uint8_t type = 0;
     uint8_t flags = 0;
     if (!in.value(type) || !in.value(flags) || !in.value(entity.layerId) ||
+        !in.value(entity.blockId) || !in.value(entity.instanceId) ||
         !in.value(entity.id) || !in.value(entity.bounds.min) ||
         !in.value(entity.bounds.max)) {
       std::fclose(file);

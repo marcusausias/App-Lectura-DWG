@@ -13,3 +13,7 @@ add_test(NAME dwgcore_scene_tests COMMAND dwgcore_scene_tests)
 add_executable(dwgcore_render_tests test_render.cpp)
 target_link_libraries(dwgcore_render_tests PRIVATE dwgcore)
 add_test(NAME dwgcore_render_tests COMMAND dwgcore_render_tests)
+
+add_executable(dwgcore_snap_tests test_snap.cpp)
+target_link_libraries(dwgcore_snap_tests PRIVATE dwgcore)
+add_test(NAME dwgcore_snap_tests COMMAND dwgcore_snap_tests)

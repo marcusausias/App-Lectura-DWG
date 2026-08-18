@@ -14,11 +14,17 @@ struct Context {
   // bloque acaba insertándose a sí mismo, aunque sea a través de otros, el
   // aplanado no terminaría nunca.
   std::vector<std::string> openBlocks;
+
+  // Cada expansión de un INSERT recibe un número propio. Se empieza en 1 para
+  // que el 0 quede libre y signifique "suelto en el espacio modelo".
+  uint32_t nextInstance = 1;
+  uint32_t currentInstance = 0;
 };
 
 void emit(Context& context, const Entity& entity, const Transform2D& transform) {
   Entity placed = transformEntity(entity, transform, context.options.maxSagitta);
   placed.blockPath = context.openBlocks;
+  placed.instanceId = context.currentInstance;
   context.result.entities.push_back(std::move(placed));
 }
 
@@ -55,10 +61,15 @@ void expandInsert(Context& context, const InsertRef& insert,
   // que un bloque anidado hereda la colocación completa de sus contenedores.
   const Transform2D combined = concat(parentTransform, insert.transform);
 
+  const uint32_t previousInstance = context.currentInstance;
+  context.currentInstance = context.nextInstance++;
+
   context.openBlocks.push_back(insert.blockName);
   expand(context, found->second.entities, found->second.inserts, combined,
          depth + 1);
   context.openBlocks.pop_back();
+
+  context.currentInstance = previousInstance;
 }
 
 void expand(Context& context, const std::vector<Entity>& entities,
@@ -77,7 +88,7 @@ FlattenResult flatten(const std::vector<Entity>& entities,
                       const std::map<std::string, BlockDefinition>& blocks,
                       const FlattenOptions& options) {
   FlattenResult result;
-  Context context{blocks, options, result, {}};
+  Context context{blocks, options, result, {}, 1, 0};
   expand(context, entities, inserts, Transform2D{}, 0);
   return result;
 }
