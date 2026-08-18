@@ -355,8 +355,19 @@ ExtractedScene extractScene(const std::string& path) {
     blockNameByHandle[static_cast<unsigned long>(object->handle.value)] = name;
 
     // Las referencias externas se declaran como bloque, pero su contenido está
-    // en otro archivo. Aquí se crea la definición vacía para que el aplanado
-    // las cuente como bloque ausente y la interfaz pueda avisar.
+    // en otro archivo. No se les crea definición: así el aplanado las cuenta
+    // como bloque ausente y la interfaz puede avisar en vez de dibujar el plano
+    // incompleto en silencio.
+    if (header->blkisxref) {
+      if (!name.empty()) {
+        XrefDeclaration declaration;
+        declaration.blockName = name;
+        declaration.rawPath = readText(header, "BLOCK_HEADER", "xref_pname");
+        declaration.isOverlay = header->xrefoverlaid != 0;
+        scene.xrefs.push_back(std::move(declaration));
+      }
+    }
+
     if (!header->blkisxref && !name.empty()) {
       dwgcore::BlockDefinition definition;
       definition.name = name;
@@ -498,6 +509,99 @@ ExtractedScene extractScene(const std::string& path) {
   scene.ok = true;
   dwg_free(&dwg);
   return scene;
+}
+
+namespace {
+
+// Los bloques de una referencia externa se guardan con el nombre de la xref por
+// delante. Dos planos distintos pueden tener ambos un bloque "PUERTA" con
+// contenido diferente, y sin separarlos uno pisaría al otro.
+std::string namespacedBlock(const std::string& xrefName, const std::string& block) {
+  return xrefName + "|" + block;
+}
+
+void renameInserts(std::vector<dwgcore::InsertRef>& inserts,
+                   const std::string& xrefName) {
+  for (dwgcore::InsertRef& insert : inserts) {
+    insert.blockName = namespacedBlock(xrefName, insert.blockName);
+  }
+}
+
+// Incorpora un archivo externo como definición del bloque `xrefName`.
+bool mergeOne(ExtractedScene& target, const std::string& xrefName,
+              const std::string& path,
+              const std::map<std::string, std::string>& resolvedPaths, int depth);
+
+void mergeInto(ExtractedScene& target, ExtractedScene& source,
+               const std::string& xrefName) {
+  // Los bloques propios del archivo externo entran con nombre separado, y las
+  // inserciones que los usan se reescriben para apuntar al nuevo nombre.
+  for (auto& [name, definition] : source.blocks) {
+    dwgcore::BlockDefinition copy = definition;
+    copy.name = namespacedBlock(xrefName, name);
+    renameInserts(copy.inserts, xrefName);
+    target.blocks[copy.name] = std::move(copy);
+  }
+
+  // El espacio modelo del archivo externo pasa a ser el contenido del bloque
+  // con el que se inserta en el plano principal.
+  dwgcore::BlockDefinition definition;
+  definition.name = xrefName;
+  definition.entities = std::move(source.entities);
+  definition.inserts = std::move(source.inserts);
+  renameInserts(definition.inserts, xrefName);
+  target.blocks[xrefName] = std::move(definition);
+
+  for (const auto& [type, count] : source.unsupported) {
+    target.unsupported[type] += count;
+  }
+}
+
+bool mergeOne(ExtractedScene& target, const std::string& xrefName,
+              const std::string& path,
+              const std::map<std::string, std::string>& resolvedPaths, int depth) {
+  ExtractedScene source = extractScene(path);
+  if (!source.ok) return false;
+
+  // Una xref puede contener otras xrefs. Se resuelven contra el mismo mapa,
+  // acotando la profundidad para que una cadena circular no cuelgue la carga.
+  if (depth > 0) {
+    for (const XrefDeclaration& nested : source.xrefs) {
+      const auto found = resolvedPaths.find(nested.blockName);
+      if (found == resolvedPaths.end()) continue;
+      mergeOne(source, nested.blockName, found->second, resolvedPaths, depth - 1);
+    }
+  }
+
+  mergeInto(target, source, xrefName);
+  return true;
+}
+
+}  // namespace
+
+XrefResolution mergeXrefs(ExtractedScene& scene,
+                          const std::map<std::string, std::string>& resolvedPaths,
+                          int maxDepth) {
+  XrefResolution resolution;
+  if (!scene.ok) return resolution;
+
+  for (const XrefDeclaration& xref : scene.xrefs) {
+    const auto found = resolvedPaths.find(xref.blockName);
+    if (found == resolvedPaths.end() || found->second.empty()) {
+      resolution.unresolvedBlocks.push_back(xref.blockName);
+      continue;
+    }
+
+    if (mergeOne(scene, xref.blockName, found->second, resolvedPaths, maxDepth - 1)) {
+      resolution.resolved += 1;
+    } else {
+      // El archivo estaba, pero no se pudo leer: distinto de no encontrarlo, y
+      // conviene que la interfaz lo diga de otra manera.
+      resolution.failed += 1;
+      resolution.unresolvedBlocks.push_back(xref.blockName);
+    }
+  }
+  return resolution;
 }
 
 }  // namespace dwgapp

@@ -62,13 +62,15 @@ extern "C" {
 JNIEXPORT jlong JNICALL
 Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_openPlan(
     JNIEnv* env, jobject, jstring dwgPath, jstring cachePath, jlong sourceSize,
-    jlong sourceModified) {
+    jlong sourceModified, jlong variant, jobjectArray xrefNames,
+    jobjectArray xrefPaths) {
   const std::string dwg = toString(env, dwgPath);
   const std::string cache = toString(env, cachePath);
 
   dwgcore::CacheStamp stamp;
   stamp.sourceSize = static_cast<uint64_t>(sourceSize);
   stamp.sourceModified = static_cast<uint64_t>(sourceModified);
+  stamp.variant = static_cast<uint64_t>(variant);
 
   auto plan = std::make_unique<OpenPlan>();
 
@@ -76,6 +78,22 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_openPlan(
   if (!dwgcore::readCache(cache, stamp, plan->scene)) {
     dwgapp::ExtractedScene extracted = dwgapp::extractScene(dwg);
     if (!extracted.ok) return 0;
+
+    // Referencias externas ya localizadas por la capa de Android, que es la
+    // única que sabe traducir una ruta de Windows a un archivo del dispositivo.
+    std::map<std::string, std::string> resolved;
+    if (xrefNames != nullptr && xrefPaths != nullptr) {
+      const jsize count =
+          std::min(env->GetArrayLength(xrefNames), env->GetArrayLength(xrefPaths));
+      for (jsize i = 0; i < count; ++i) {
+        auto name = static_cast<jstring>(env->GetObjectArrayElement(xrefNames, i));
+        auto path = static_cast<jstring>(env->GetObjectArrayElement(xrefPaths, i));
+        resolved[toString(env, name)] = toString(env, path);
+        env->DeleteLocalRef(name);
+        env->DeleteLocalRef(path);
+      }
+    }
+    dwgapp::mergeXrefs(extracted, resolved);
 
     dwgcore::FlattenResult flat =
         dwgcore::flatten(extracted.entities, extracted.inserts, extracted.blocks);
@@ -228,6 +246,33 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_getVisibleTexts(
   return result;
 }
 
+
+// Referencias externas que declara un DWG, sin llegar a abrirlo del todo.
+//
+// Se consulta antes de procesar el plano: la capa de Android necesita saber qué
+// archivos buscar en la carpeta del proyecto, y con qué nombre de bloque
+// asociarlos.
+//
+// Devuelve pares (nombre de bloque, ruta original) aplanados.
+JNIEXPORT jobjectArray JNICALL
+Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_inspectXrefs(
+    JNIEnv* env, jobject, jstring dwgPath) {
+  const dwgapp::ExtractedScene scene = dwgapp::extractScene(toString(env, dwgPath));
+
+  jclass stringClass = env->FindClass("java/lang/String");
+  jobjectArray result = env->NewObjectArray(
+      static_cast<jsize>(scene.xrefs.size() * 2), stringClass, nullptr);
+
+  for (size_t i = 0; i < scene.xrefs.size(); ++i) {
+    jstring name = env->NewStringUTF(scene.xrefs[i].blockName.c_str());
+    jstring path = env->NewStringUTF(scene.xrefs[i].rawPath.c_str());
+    env->SetObjectArrayElement(result, static_cast<jsize>(i * 2), name);
+    env->SetObjectArrayElement(result, static_cast<jsize>(i * 2 + 1), path);
+    env->DeleteLocalRef(name);
+    env->DeleteLocalRef(path);
+  }
+  return result;
+}
 
 // Enganche del dedo al punto notable más cercano.
 //

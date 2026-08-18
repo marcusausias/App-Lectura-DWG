@@ -23,6 +23,12 @@ namespace dwgcore {
 struct CacheStamp {
   uint64_t sourceSize = 0;
   uint64_t sourceModified = 0;
+
+  // Resume el conjunto de referencias externas con el que se generó la caché.
+  // Si una xref se reenlaza, se actualiza o desaparece, este valor cambia y la
+  // caché se descarta: de lo contrario se seguiría dibujando el plano con el
+  // contenido externo antiguo sin ningún aviso.
+  uint64_t variant = 0;
 };
 
 bool writeCache(const std::string& path, const Scene& scene, const CacheStamp& stamp);

@@ -188,9 +188,28 @@ class NativePlan private constructor(private var handle: Long) : AutoCloseable {
             cachePath: String,
             sourceSize: Long,
             sourceModified: Long,
+            variant: Long = 0L,
+            xrefs: Map<String, String> = emptyMap(),
         ): NativePlan? {
-            val handle = PlanNative.openPlan(dwgPath, cachePath, sourceSize, sourceModified)
+            val names = xrefs.keys.toTypedArray()
+            val paths = names.map { xrefs.getValue(it) }.toTypedArray()
+            val handle = PlanNative.openPlan(
+                dwgPath, cachePath, sourceSize, sourceModified, variant, names, paths,
+            )
             return if (handle == 0L) null else NativePlan(handle)
+        }
+
+        /**
+         * Referencias externas que declara el archivo, sin abrirlo del todo.
+         *
+         * Devuelve pares (nombre de bloque, ruta original tal cual la guardó
+         * AutoCAD).
+         */
+        fun inspectXrefs(dwgPath: String): List<Pair<String, String>> {
+            val flat = PlanNative.inspectXrefs(dwgPath) ?: return emptyList()
+            return (flat.indices step 2)
+                .filter { it + 1 < flat.size }
+                .map { flat[it] to flat[it + 1] }
         }
     }
 }
@@ -213,7 +232,12 @@ object PlanNative {
         cachePath: String,
         sourceSize: Long,
         sourceModified: Long,
+        variant: Long,
+        xrefNames: Array<String>,
+        xrefPaths: Array<String>,
     ): Long
+
+    external fun inspectXrefs(dwgPath: String): Array<String>?
 
     external fun closePlan(handle: Long)
     external fun getVertexBuffer(handle: Long): ByteBuffer?

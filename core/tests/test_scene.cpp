@@ -230,6 +230,10 @@ void testCacheRejectsStaleFile() {
   check(!readCache(path, CacheStamp{1001, 2000}, restored), "tamaño distinto");
   check(readCache(path, CacheStamp{1000, 2000}, restored), "sello correcto");
 
+  // Y si cambian las referencias externas, aunque el DWG sea idéntico: seguir
+  // dibujando con el contenido externo antiguo sería peor que reprocesar.
+  check(!readCache(path, CacheStamp{1000, 2000, 99}, restored), "xrefs distintas");
+
   std::remove(path.c_str());
 }
 

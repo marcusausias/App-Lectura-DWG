@@ -10,7 +10,7 @@ namespace {
 constexpr char kMagic[8] = {'D', 'W', 'G', 'C', 'A', 'C', 'H', 'E'};
 // Al cambiar el formato se sube la versión: una caché escrita por una versión
 // anterior se descarta y se vuelve a generar, en lugar de leerse mal.
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 3;
 
 // Banderas empaquetadas en un byte por entidad.
 constexpr uint8_t kFlagClosed = 1 << 0;
@@ -115,6 +115,7 @@ bool writeCache(const std::string& path, const Scene& scene,
   out.value(kVersion);
   out.value(stamp.sourceSize);
   out.value(stamp.sourceModified);
+  out.value(stamp.variant);
 
   out.value(static_cast<uint32_t>(scene.layers.size()));
   for (const std::string& layer : scene.layers) out.text(layer);
@@ -188,12 +189,13 @@ bool readCache(const std::string& path, const CacheStamp& expected, Scene& scene
   uint32_t version = 0;
   CacheStamp stamp;
   if (!in.value(version) || version != kVersion || !in.value(stamp.sourceSize) ||
-      !in.value(stamp.sourceModified)) {
+      !in.value(stamp.sourceModified) || !in.value(stamp.variant)) {
     std::fclose(file);
     return false;
   }
   if (stamp.sourceSize != expected.sourceSize ||
-      stamp.sourceModified != expected.sourceModified) {
+      stamp.sourceModified != expected.sourceModified ||
+      stamp.variant != expected.variant) {
     std::fclose(file);
     return false;
   }

@@ -7,6 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.marcusausias.dwgviewer.data.DwgFileReader
 import com.marcusausias.dwgviewer.nativebridge.NativePlan
 import com.marcusausias.dwgviewer.nativebridge.PlanText
+import com.marcusausias.dwgviewer.xref.ResolvedXref
+import com.marcusausias.dwgviewer.xref.XrefResolver
+import com.marcusausias.dwgviewer.xref.XrefStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,12 +27,20 @@ sealed interface PlanState {
         val layers: List<String>,
         val entityCount: Int,
         val bounds: DoubleArray,
-    ) : PlanState
+        val xrefs: List<ResolvedXref> = emptyList(),
+    ) : PlanState {
+        val missingXrefs: List<ResolvedXref> get() = xrefs.filterNot { it.isResolved }
+    }
 }
 
 class ViewerViewModel(application: Application) : AndroidViewModel(application) {
 
     private val reader = DwgFileReader(application)
+    private val xrefStore = XrefStore(application)
+    private val xrefResolver = XrefResolver(application, xrefStore)
+
+    /** Carpeta del proyecto con permiso persistente, si ya se concedió una. */
+    val projectFolder: String? get() = xrefStore.projectTreeUri
 
     private val _state = MutableStateFlow<PlanState>(PlanState.Empty)
     val state: StateFlow<PlanState> = _state.asStateFlow()
@@ -63,10 +74,41 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
 
     private var fitPending = true
     private var nextMeasurementId = 1L
+    private var currentPlanUri: Uri? = null
+    private var currentPlanKey: String? = null
+
+    /**
+     * Recuerda la carpeta del proyecto.
+     *
+     * Android conserva este permiso entre sesiones, y es lo que permite que las
+     * referencias externas se resuelvan solas la próxima vez sin volver a
+     * preguntar nada.
+     */
+    fun setProjectFolder(treeUri: Uri) {
+        val application = getApplication<Application>()
+        try {
+            application.contentResolver.takePersistableUriPermission(
+                treeUri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        } catch (error: SecurityException) {
+            // Algunos proveedores no ofrecen permiso persistente. Se sigue
+            // adelante: valdrá para esta sesión, y la próxima vez se pedirá.
+        }
+        xrefStore.projectTreeUri = treeUri.toString()
+    }
+
+    /** Enlaza a mano una xref que no se ha podido localizar, y lo recuerda. */
+    fun linkXref(blockName: String, documentUri: Uri) {
+        val planKey = currentPlanKey ?: return
+        xrefResolver.rememberLink(planKey, blockName, documentUri)
+        currentPlanUri?.let { open(it) }
+    }
 
     fun open(uri: Uri) {
         viewModelScope.launch {
             closeCurrent()
+            currentPlanUri = uri
             _state.value = PlanState.Loading
 
             val result = withContext(Dispatchers.IO) { openBlocking(uri) }
@@ -86,12 +128,27 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
         val local = reader.copyToCache(uri)
             ?: return PlanState.Failed("No se pudo leer el archivo desde esa ubicación.")
 
+        val planKey = "${local.length()}-${uri.lastPathSegment.orEmpty().takeLast(40)}"
+        currentPlanKey = planKey
+
+        // Antes de procesar el plano hay que saber qué archivos externos busca,
+        // porque su contenido forma parte de la escena resultante.
+        val declarations = NativePlan.inspectXrefs(local.absolutePath)
+        val treeUri = xrefStore.projectTreeUri?.let(Uri::parse)
+        val resolved = xrefResolver.resolve(planKey, declarations, treeUri)
+
+        val xrefPaths = resolved
+            .filter { it.isResolved }
+            .associate { it.blockName to it.localFile!!.absolutePath }
+
         val cacheFile = File(getApplication<Application>().cacheDir, "plan-${local.name}.bin")
         val plan = NativePlan.open(
             dwgPath = local.absolutePath,
             cachePath = cacheFile.absolutePath,
             sourceSize = local.length(),
             sourceModified = local.lastModified(),
+            variant = variantOf(resolved),
+            xrefs = xrefPaths,
         )
 
         // El DWG copiado ya no hace falta: la escena está en memoria y, si se
@@ -111,7 +168,24 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
             layers = plan.layers(),
             entityCount = plan.entityCount(),
             bounds = bounds,
+            xrefs = resolved,
         )
+    }
+
+    /**
+     * Resumen del conjunto de referencias externas usadas.
+     *
+     * Si una xref se reenlaza o cambia de tamaño, este valor cambia y la caché
+     * del plano se descarta: seguir dibujando con el contenido externo antiguo
+     * sería un error silencioso de los peores.
+     */
+    private fun variantOf(resolved: List<ResolvedXref>): Long {
+        var hash = 1125899906842597L
+        resolved.sortedBy { it.blockName }.forEach { xref ->
+            val piece = "${xref.blockName}:${xref.localFile?.length() ?: -1}"
+            piece.forEach { hash = 31 * hash + it.code }
+        }
+        return hash
     }
 
     fun onViewportChanged(width: Int, height: Int) {
@@ -351,6 +425,7 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
         // Sin esto se quedarían varios megas reservados por cada plano abierto.
         closeCurrent()
         reader.clearCache()
+        xrefResolver.clearCache()
     }
 
     private companion object {

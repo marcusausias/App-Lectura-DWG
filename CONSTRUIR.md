@@ -104,9 +104,27 @@ Si el plano se abre pero sale muy vacío, es que trae tipos de entidad que
 todavía no se convierten. Quedan pendientes los sombreados (HATCH) y las
 directrices (LEADER).
 
-**Referencias externas:** todavía no se resuelven. Un plano con xrefs se abrirá
-sin el contenido referenciado. Es el trabajo de la Fase 3, y sus rutas serán de
-Windows (`N:\Obra\...`), que no existen en el móvil.
+### Referencias externas
+
+Si el plano tiene xrefs y falta alguna, aparece una banda roja arriba. Pulsa
+**Elegir carpeta** e indica la carpeta raíz del proyecto: la app buscará dentro
+los archivos que faltan y **recordará el permiso**, así que la próxima vez se
+resuelven solas.
+
+Cuando una xref no aparezca ni así, **Localizar** permite señalar el archivo a
+mano, y ese enlace también queda guardado.
+
+Las rutas que guarda AutoCAD suelen ser absolutas de una unidad de red
+(`N:\2017\Obra\...`), que en un móvil no existen. Por eso la búsqueda por
+nombre de archivo dentro de la carpeta del proyecto es la que resuelve la
+mayoría de los casos, y la ruta relativa es la excepción.
+
+Qué comprobar:
+
+- Abrir un plano con xrefs sin carpeta configurada → banda roja con los nombres.
+- Elegir la carpeta → el plano se recarga completo y la banda desaparece.
+- **Cerrar la app y volver a abrir el mismo plano → no debe volver a preguntar
+  nada.** Ese es el requisito de memoria de los enlaces.
 
 ---
 

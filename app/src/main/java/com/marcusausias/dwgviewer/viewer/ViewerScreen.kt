@@ -58,6 +58,23 @@ fun ViewerScreen(model: ViewerViewModel = viewModel()) {
         ActivityResultContracts.OpenDocument(),
     ) { uri -> if (uri != null) model.open(uri) }
 
+    // Carpeta del proyecto: se pide una vez y Android conserva el permiso, que
+    // es lo que permite resolver las referencias externas sin volver a
+    // preguntar en sesiones posteriores.
+    val folderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri -> if (uri != null) model.setProjectFolder(uri) }
+
+    // Reenlace manual de una xref concreta que no se ha localizado.
+    var linkingBlock by remember { mutableStateOf<String?>(null) }
+    val xrefPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        val block = linkingBlock
+        linkingBlock = null
+        if (uri != null && block != null) model.linkXref(block, uri)
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxSize()) {
             Box(
@@ -112,6 +129,22 @@ fun ViewerScreen(model: ViewerViewModel = viewModel()) {
                     modifier = Modifier.align(Alignment.Center),
                 )
 
+                if (ready != null && ready.missingXrefs.isNotEmpty()) {
+                    XrefBanner(
+                        missing = ready.missingXrefs,
+                        hasProjectFolder = model.projectFolder != null,
+                        onPickFolder = { folderPicker.launch(null) },
+                        onLink = { block ->
+                            linkingBlock = block
+                            xrefPicker.launch(arrayOf("*/*"))
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .windowInsetsPadding(WindowInsets.safeDrawing)
+                            .padding(top = 48.dp),
+                    )
+                }
+
                 ViewerToolbar(
                     hasPlan = ready != null,
                     onPick = { picker.launch(arrayOf("*/*")) },
@@ -119,6 +152,7 @@ fun ViewerScreen(model: ViewerViewModel = viewModel()) {
                     onLayers = { showLayerSheet = true },
                     onMeasurements = { showMeasureSheet = true },
                     onToggleBackground = model::toggleBackground,
+                    onPickFolder = { folderPicker.launch(null) },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .windowInsetsPadding(WindowInsets.safeDrawing),
@@ -204,6 +238,7 @@ private fun ViewerToolbar(
     onLayers: () -> Unit,
     onMeasurements: () -> Unit,
     onToggleBackground: () -> Unit,
+    onPickFolder: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(modifier = modifier.padding(8.dp)) {
@@ -213,6 +248,7 @@ private fun ViewerToolbar(
             TextButton(onClick = onLayers) { Text("Capas") }
             TextButton(onClick = onMeasurements) { Text("Medidas") }
             TextButton(onClick = onToggleBackground) { Text("Fondo") }
+            TextButton(onClick = onPickFolder) { Text("Carpeta") }
         }
     }
 }
