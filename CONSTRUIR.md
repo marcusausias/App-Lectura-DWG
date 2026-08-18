@@ -78,6 +78,20 @@ No has hecho el paso 1, o lo has hecho para otra arquitectura.
 La versión de NDK que tiene Gradle no coincide con la instalada. Comprueba la
 ruta en `local.properties` o fija `ndkVersion` en `app/build.gradle.kts`.
 
+### Versión de release
+
+`./gradlew assembleRelease` aplica R8, que reduce y renombra el código. Las
+reglas de `app/proguard-rules.pro` conservan lo que el puente nativo busca por
+nombre en tiempo de ejecución; sin ellas la app compila pero revienta al abrir
+un plano.
+
+Si algún día se añade una clase nueva que el C++ instancie con `FindClass`, hay
+que añadirla también ahí. Se comprueba con:
+
+```bash
+grep -oP 'FindClass\("\K[^"]+' app/src/main/cpp/*.cpp | grep -v '^java/'
+```
+
 ---
 
 ## Paso 3 — Comprobar que lee y dibuja tus planos
@@ -158,6 +172,10 @@ Lo que conviene comprobar además:
   exacta.
 - *Contar* sobre un símbolo repetido debe dar el número correcto. En el archivo
   de pruebas del proyecto salen 54 rociadores y 28 laterales.
+- **Cerrar la app del todo y reabrir el mismo plano: las mediciones deben seguir
+  ahí, con sus etiquetas.** Se guardan en `filesDir`, no en la caché, para que
+  Android no pueda borrarlas al quedarse sin espacio.
+- Abrir otro plano y volver al primero: cada uno con las suyas, sin mezclarse.
 
 ---
 

@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.marcusausias.dwgviewer.data.DwgFileReader
+import com.marcusausias.dwgviewer.data.MeasurementStore
 import com.marcusausias.dwgviewer.nativebridge.NativePlan
 import com.marcusausias.dwgviewer.nativebridge.PlanText
 import com.marcusausias.dwgviewer.xref.ResolvedXref
@@ -36,6 +37,7 @@ sealed interface PlanState {
 class ViewerViewModel(application: Application) : AndroidViewModel(application) {
 
     private val reader = DwgFileReader(application)
+    private val measurementStore = MeasurementStore(application)
     private val xrefStore = XrefStore(application)
     private val xrefResolver = XrefResolver(application, xrefStore)
 
@@ -118,6 +120,7 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
                 fitPending = true
                 applyFitIfPending()
                 refreshTexts()
+                restoreMeasurements()
             }
         }
     }
@@ -128,7 +131,7 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
         val local = reader.copyToCache(uri)
             ?: return PlanState.Failed("No se pudo leer el archivo desde esa ubicación.")
 
-        val planKey = "${local.length()}-${uri.lastPathSegment.orEmpty().takeLast(40)}"
+        val planKey = planKeyFor(uri)
         currentPlanKey = planKey
 
         // Antes de procesar el plano hay que saber qué archivos externos busca,
@@ -170,6 +173,23 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
             bounds = bounds,
             xrefs = resolved,
         )
+    }
+
+    /**
+     * Identificador estable de un plano.
+     *
+     * No incluye el tamaño del archivo a propósito. Si lo incluyera, en cuanto
+     * el proyectista revisara el plano y cambiara un solo byte se perderían las
+     * mediciones y habría que rehacer a mano los enlaces de xref, que es
+     * justamente lo que la app promete evitar.
+     *
+     * El hash de la URI completa evita que dos planos con el mismo nombre en
+     * carpetas distintas compartan mediciones.
+     */
+    private fun planKeyFor(uri: Uri): String {
+        val name = uri.lastPathSegment.orEmpty().substringAfterLast('/').takeLast(48)
+        val hash = uri.toString().hashCode().toUInt().toString(16)
+        return "$name-$hash"
     }
 
     /**
@@ -384,21 +404,25 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         _measurements.value = _measurements.value.dropLast(1)
+        persistMeasurements()
     }
 
     fun removeMeasurement(id: Long) {
         _measurements.value = _measurements.value.filterNot { it.id == id }
+        persistMeasurements()
     }
 
     fun renameMeasurement(id: Long, label: String) {
         _measurements.value = _measurements.value.map {
             if (it.id == id) it.copy(label = label) else it
         }
+        persistMeasurements()
     }
 
     fun clearMeasurements() {
         _measurements.value = emptyList()
         _pending.value = PendingMeasure(tool = _pending.value.tool)
+        persistMeasurements()
     }
 
     fun setDecimals(value: Int) { _decimals.value = value.coerceIn(0, 6) }
@@ -407,15 +431,47 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun addMeasurement(measurement: Measurement) {
         _measurements.value = _measurements.value + measurement
+        persistMeasurements()
+    }
+
+    /**
+     * Vuelca las mediciones a disco.
+     *
+     * Se hace en cada cambio y no al cerrar: son unos pocos KB, el coste es
+     * imperceptible, y si el sistema mata la app en segundo plano no se pierde
+     * nada de lo medido.
+     */
+    private fun persistMeasurements() {
+        val planKey = currentPlanKey ?: return
+        val snapshot = _measurements.value
+        viewModelScope.launch(Dispatchers.IO) {
+            measurementStore.save(planKey, snapshot)
+        }
+    }
+
+    private fun restoreMeasurements() {
+        val planKey = currentPlanKey ?: return
+        viewModelScope.launch {
+            val restored = withContext(Dispatchers.IO) { measurementStore.load(planKey) }
+            if (restored.isEmpty()) return@launch
+
+            _measurements.value = restored
+            // Los identificadores tienen que seguir donde se quedaron: si se
+            // reiniciara el contador, dos mediciones compartirían id y borrar
+            // una quitaría la equivocada.
+            nextMeasurementId = restored.maxOf { it.id } + 1
+        }
     }
 
     private fun closeCurrent() {
         (_state.value as? PlanState.Ready)?.plan?.close()
         _visibleTexts.value = emptyList()
         _hiddenLayers.value = emptySet()
-        // Las mediciones son de un plano concreto: conservarlas al abrir otro
-        // daría cifras que no corresponden con lo que se está viendo.
+        // Las mediciones son de un plano concreto: conservarlas en pantalla al
+        // abrir otro daría cifras que no corresponden con lo que se ve. Solo se
+        // vacía la lista en memoria; el archivo guardado sigue donde estaba.
         _measurements.value = emptyList()
+        nextMeasurementId = 1L
         _pending.value = PendingMeasure()
         _snapPreview.value = null
     }

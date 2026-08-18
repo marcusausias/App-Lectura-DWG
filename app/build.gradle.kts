@@ -2,7 +2,6 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-    id("com.google.devtools.ksp")
 }
 
 android {
@@ -86,10 +85,9 @@ dependencies {
     // Acceso a carpetas del proyecto mediante el Storage Access Framework.
     implementation("androidx.documentfile:documentfile:1.0.1")
 
-    // Persistencia de proyectos, planos, enlaces de xref y mediciones.
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
+    // Las mediciones se guardan como JSON con org.json, que viene en Android, y
+    // los enlaces de xref en SharedPreferences. Para unas decenas de entradas
+    // por plano, una base de datos solo añadía KSP y tiempo de compilación.
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 
