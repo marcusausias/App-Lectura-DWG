@@ -61,6 +61,13 @@ intento.
 ./gradlew assembleDebug
 ```
 
+La primera vez, el wrapper descarga Gradle 8.14.3 (unos 130 MB), así que ese
+primer build necesita conexión. Después ya no.
+
+Si prefieres no tocar la terminal, abrir la carpeta del proyecto en Android
+Studio y pulsar **Run** hace exactamente lo mismo. El paso 1 sí hay que
+ejecutarlo antes en cualquier caso.
+
 El APK queda en `app/build/outputs/apk/debug/`.
 
 Para instalarlo en un móvil conectado por USB con la depuración activada:
