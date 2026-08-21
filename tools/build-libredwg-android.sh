@@ -23,7 +23,8 @@ RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR="$RAIZ/vendor/libredwg"
 DESTINO="$RAIZ/vendor/prebuilt"
 API_MINIMA=26
-ABIS=("arm64-v8a" "armeabi-v7a")
+# Debe coincidir con abiFilters en app/build.gradle.kts.
+ABIS=("arm64-v8a")
 
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
   echo "Define ANDROID_NDK_HOME con la ruta al NDK." >&2

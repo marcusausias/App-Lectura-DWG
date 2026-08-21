@@ -70,28 +70,44 @@ ejecutan desde aquí.
 
 Este paso solo se hace una vez. Sustituye la versión del NDK por la tuya:
 
-**Mac y Linux:**
+Mira primero qué versión de NDK tienes:
+
 ```bash
-export ANDROID_NDK_HOME=~/Library/Android/sdk/ndk/27.0.12077973    # Mac
-export ANDROID_NDK_HOME=~/Android/Sdk/ndk/27.0.12077973            # Linux
+ls ~/Library/Android/sdk/ndk/          # Mac
+ls ~/Android/Sdk/ndk/                  # Linux
+```
+
+**Ese número tiene que coincidir con el que está fijado en
+`app/build.gradle.kts`** (línea `ndkVersion`). Si no coincide, cámbialo ahí.
+
+**Mac:**
+```bash
+export ANDROID_NDK_HOME=~/Library/Android/sdk/ndk/30.0.15729638
+tools/build-libredwg-android.sh
+```
+
+**Linux:**
+```bash
+export ANDROID_NDK_HOME=~/Android/Sdk/ndk/30.0.15729638
 tools/build-libredwg-android.sh
 ```
 
 **Windows (Git Bash):**
 ```bash
-export ANDROID_NDK_HOME=/c/Users/TU_USUARIO/AppData/Local/Android/Sdk/ndk/27.0.12077973
+export ANDROID_NDK_HOME=/c/Users/TU_USUARIO/AppData/Local/Android/Sdk/ndk/30.0.15729638
 tools/build-libredwg-android.sh
 ```
 
-Tarda unos minutos por arquitectura. Al terminar debe existir esto:
+Tarda unos minutos. Al terminar debe existir esto:
 
 ```
 vendor/prebuilt/arm64-v8a/libredwg.a
-vendor/prebuilt/armeabi-v7a/libredwg.a
 ```
 
-Compruébalo con `ls vendor/prebuilt/*/`. Si no están, mira la sección de errores
-al final.
+Compruébalo con `ls vendor/prebuilt/arm64-v8a/`. Si no está, mira la sección de
+errores al final.
+
+Solo se compila para ARM de 64 bits, que es lo que lleva cualquier móvil actual.
 
 ---
 
@@ -187,6 +203,12 @@ Si abres el proyecto en Android Studio, lo crea él solo.
 
 **`Falta vendor/prebuilt/<abi>/libredwg.a`**
 No has hecho el paso 3, o falló sin que te dieras cuenta. Revísalo.
+
+**`No version of NDK matched the requested version`**
+La versión de NDK que tienes instalada no es la que fija el proyecto. Mira cuál
+tienes con `ls ~/Library/Android/sdk/ndk/` y pon ese número en la línea
+`ndkVersion` de `app/build.gradle.kts`. Tiene que ser la misma que usaste en el
+`export` del paso 3.
 
 **El móvil no aparece / `no devices found`**
 No has aceptado el diálogo de depuración en el móvil, o el cable es solo de

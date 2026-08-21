@@ -8,6 +8,14 @@ android {
     namespace = "com.marcusausias.dwgviewer"
     compileSdk = 35
 
+    // Se fija a propósito. Sin esta línea, el plugin de Android exige su NDK por
+    // defecto y falla aunque haya otro instalado y perfectamente válido,
+    // obligando a descargar 2 GB de una versión concreta.
+    //
+    // Al cambiar de NDK hay que actualizar este número: se ve con
+    // `ls ~/Library/Android/sdk/ndk/` en Mac.
+    ndkVersion = "30.0.15729638"
+
     defaultConfig {
         applicationId = "com.marcusausias.dwgviewer"
         // API 26 cubre prácticamente todo el parque actual y es el mínimo que
@@ -18,9 +26,16 @@ android {
         versionName = "0.1.0"
 
         ndk {
-            // Solo ARM: no hay dispositivos de obra x86. Cada ABI extra suma
-            // ~20 MB al APK por culpa de libredwg.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // Solo ARM de 64 bits.
+            //
+            // Cualquier móvil de trabajo actual lo es; armeabi-v7a solo haría
+            // falta para dispositivos de hace más de una década. Quitarlo reduce
+            // a la mitad el tiempo de compilar LibreDWG, que es el paso lento, y
+            // adelgaza el APK unos 8 MB.
+            //
+            // Para volver a añadirlo: incluirlo aquí y en la lista ABIS de
+            // tools/build-libredwg-android.sh, que tienen que coincidir.
+            abiFilters += listOf("arm64-v8a")
         }
 
         externalNativeBuild {

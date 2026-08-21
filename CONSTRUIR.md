@@ -23,16 +23,22 @@ Solo hace falta hacerlo una vez. El script clona LibreDWG en `vendor/`, lo
 compila para las dos arquitecturas ARM y deja los `.a` donde CMake los busca.
 
 ```bash
-export ANDROID_NDK_HOME=~/Android/Sdk/ndk/27.0.12077973   # ajusta la versión
+export ANDROID_NDK_HOME=~/Library/Android/sdk/ndk/30.0.15729638   # Mac
+export ANDROID_NDK_HOME=~/Android/Sdk/ndk/30.0.15729638           # Linux
 tools/build-libredwg-android.sh
 ```
 
-Tarda unos minutos por arquitectura. Al terminar deberías tener:
+La versión del NDK tiene que coincidir con la línea `ndkVersion` de
+`app/build.gradle.kts`, o Gradle exigirá otra distinta al compilar la app.
+
+Tarda unos minutos. Al terminar deberías tener:
 
 ```
 vendor/prebuilt/arm64-v8a/libredwg.a
-vendor/prebuilt/armeabi-v7a/libredwg.a
 ```
+
+Solo se compila ARM de 64 bits. Para añadir `armeabi-v7a` hay que ponerlo en la
+lista `ABIS` del script **y** en `abiFilters` de `app/build.gradle.kts`.
 
 ### Si falla
 
