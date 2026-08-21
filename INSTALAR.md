@@ -193,6 +193,11 @@ git -C vendor/libredwg submodule update --init --depth 1
 **`perl: command not found`**
 En Windows, usa Git Bash en vez de PowerShell o CMD.
 
+**`No encuentro cmake` / `No encuentro ninja`**
+No marcaste **CMake** en las SDK Tools del paso 1. Vuelve a
+`Settings → Android SDK → SDK Tools`, marca **CMake** y aplica. No hace falta
+instalarlos aparte ni con Homebrew: el script los busca dentro del SDK.
+
 **`SDK location not found`**
 Gradle no sabe dónde está el SDK. Crea un fichero `local.properties` en la raíz
 del proyecto con una línea (usa barras normales `/` incluso en Windows):

@@ -42,6 +42,44 @@ if ! command -v perl >/dev/null; then
   exit 1
 fi
 
+# CMake y Ninja no suelen estar en el PATH: en un equipo con solo Android Studio
+# instalado viven dentro del SDK, en cmake/<versión>/bin/. Se busca ahí primero
+# porque esa copia trae Ninja al lado, mientras que un cmake del sistema puede no
+# tenerlo y entonces fallaría al generar con `-G Ninja`.
+SDK_ROOT="$(cd "$ANDROID_NDK_HOME/../.." 2>/dev/null && pwd || true)"
+CMAKE_BIN=""
+
+for candidato in "$SDK_ROOT"/cmake/*/bin/cmake; do
+  if [ -x "$candidato" ]; then
+    CMAKE_BIN="$candidato"
+    PATH="$(dirname "$candidato"):$PATH"
+    export PATH
+    break
+  fi
+done
+
+if [ -z "$CMAKE_BIN" ] && command -v cmake >/dev/null; then
+  CMAKE_BIN="$(command -v cmake)"
+fi
+
+if [ -z "$CMAKE_BIN" ]; then
+  echo "No encuentro cmake." >&2
+  echo "En Android Studio: Settings → Android SDK → SDK Tools → marca 'CMake'." >&2
+  exit 1
+fi
+
+if ! command -v ninja >/dev/null; then
+  echo "No encuentro ninja. Suele venir junto a CMake en el SDK de Android." >&2
+  echo "En Android Studio: Settings → Android SDK → SDK Tools → marca 'CMake'." >&2
+  exit 1
+fi
+
+echo "▶ Usando cmake: $CMAKE_BIN"
+
+# nproc es de Linux; en macOS el equivalente es sysctl. Si no hay ninguno, cuatro
+# hilos es una suposición razonable.
+NUCLEOS="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) | head -1 )"
+
 if [ ! -d "$VENDOR" ]; then
   echo "▶ Clonando LibreDWG en vendor/…"
   git clone --depth 1 https://github.com/LibreDWG/libredwg.git "$VENDOR"
@@ -57,7 +95,7 @@ for abi in "${ABIS[@]}"; do
   # LIBREDWG_LIBONLY deja fuera las herramientas de línea de comandos y hace
   # que el objetivo `redwg` produzca libredwg.a.
   # DISABLE_WRITE quita el codificador entero: la app solo lee.
-  cmake -S "$VENDOR" -B "$BUILD" -G Ninja \
+  "$CMAKE_BIN" -S "$VENDOR" -B "$BUILD" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
     -DANDROID_ABI="$abi" \
     -DANDROID_PLATFORM="android-$API_MINIMA" \
@@ -75,7 +113,7 @@ for abi in "${ABIS[@]}"; do
   # libdwgjni.so, así que se desactiva aquí. DISABLE_WERROR evita que un aviso
   # nuevo del clang del NDK tumbe toda la compilación.
 
-  cmake --build "$BUILD" --target redwg -j"$(nproc)"
+  "$CMAKE_BIN" --build "$BUILD" --target redwg -j"$NUCLEOS"
 
   mkdir -p "$DESTINO/$abi"
   cp "$BUILD/libredwg.a" "$DESTINO/$abi/"
