@@ -80,6 +80,13 @@ echo "▶ Usando cmake: $CMAKE_BIN"
 # hilos es una suposición razonable.
 NUCLEOS="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) | head -1 )"
 
+# `stat -c%s` es de GNU y en macOS no existe: allí la opción es `-f%z`. Se prueban
+# las dos y, si ninguna vale, se devuelve 0 para que el mensaje informativo del
+# final no pueda tumbar el script entero por un dato que solo es decorativo.
+tamano_bytes() {
+  stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0
+}
+
 if [ ! -d "$VENDOR" ]; then
   echo "▶ Clonando LibreDWG en vendor/…"
   git clone --depth 1 https://github.com/LibreDWG/libredwg.git "$VENDOR"
@@ -89,7 +96,10 @@ echo "▶ Asegurando el submódulo jsmn…"
 git -C "$VENDOR" submodule update --init --depth 1
 
 for abi in "${ABIS[@]}"; do
-  echo "▶ Compilando para $abi…"
+  # Las llaves no son decorativas: el bash 3.2 que trae macOS no analiza UTF-8
+  # al leer nombres de variable y se traga el primer byte del «…» como parte del
+  # nombre, con lo que aborta por "abi?: unbound variable".
+  echo "▶ Compilando para ${abi}…"
   BUILD="$VENDOR/build-android-$abi"
 
   # LIBREDWG_LIBONLY deja fuera las herramientas de línea de comandos y hace
@@ -117,7 +127,7 @@ for abi in "${ABIS[@]}"; do
 
   mkdir -p "$DESTINO/$abi"
   cp "$BUILD/libredwg.a" "$DESTINO/$abi/"
-  echo "  ✓ $DESTINO/$abi/libredwg.a ($(( $(stat -c%s "$DESTINO/$abi/libredwg.a") / 1024 / 1024 )) MB en archivo; al enlazar se queda en ~8 MB)"
+  echo "  ✓ ${DESTINO}/${abi}/libredwg.a ($(( $(tamano_bytes "$DESTINO/$abi/libredwg.a") / 1024 / 1024 )) MB en archivo; al enlazar se queda en ~8 MB)"
 done
 
 echo

@@ -32,6 +32,17 @@ done
 TIPOS=(LINE LWPOLYLINE POLYLINE ARC CIRCLE ELLIPSE SPLINE INSERT TEXT MTEXT
        DIMENSION HATCH SOLID POINT LEADER)
 
+# `stat -c%s` es de GNU; en macOS la opción equivalente es `-f%z`.
+tamano_bytes() {
+  stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0
+}
+
+# `date +%s.%N` tampoco es portable: el date de macOS no conoce %N y devuelve la
+# letra literal, que luego rompe la resta. perl siempre está (LibreDWG lo exige).
+ahora() {
+  perl -MTime::HiRes=time -e 'printf "%.6f\n", time' 2>/dev/null || date +%s
+}
+
 for dwg in "$@"; do
   if [ ! -f "$dwg" ]; then
     echo "No existe: $dwg" >&2
@@ -39,20 +50,22 @@ for dwg in "$@"; do
   fi
 
   echo "════════════════════════════════════════════════════════════"
-  echo "ARCHIVO: $(basename "$dwg")  ($(( $(stat -c%s "$dwg") / 1024 )) KB)"
+  echo "ARCHIVO: $(basename "$dwg")  ($(( $(tamano_bytes "$dwg") / 1024 )) KB)"
   echo "════════════════════════════════════════════════════════════"
 
   # La versión solo se imprime a partir de -v2.
-  version=$("$DWGREAD" -v2 "$dwg" 2>&1 | grep -oP "version code is: \K.*" | head -1)
+  version=$("$DWGREAD" -v2 "$dwg" 2>&1 | sed -n 's/.*version code is: //p' | head -1)
   echo "Versión DWG      : ${version:-desconocida}"
 
   # dwg2dxf se niega a escribir si el destino ya existe, así que se reserva el
   # nombre sin crear el fichero.
-  dxf=$(mktemp -u --suffix=.dxf)
-  inicio=$(date +%s.%N)
+  # `mktemp -u --suffix=` es de GNU; el mktemp de macOS no lo entiende. Como aquí
+  # solo hace falta un nombre libre, se compone a mano.
+  dxf="${TMPDIR:-/tmp}/analizar-dwg-$$-${RANDOM}.dxf"
+  inicio=$(ahora)
   "$DWG2DXF" -o "$dxf" "$dwg" >/dev/null 2>&1
   salida=$?
-  fin=$(date +%s.%N)
+  fin=$(ahora)
   printf "Conversión a DXF : código %s en %.2f s\n" "$salida" "$(echo "$fin - $inicio" | bc)"
 
   if [ ! -s "$dxf" ]; then
