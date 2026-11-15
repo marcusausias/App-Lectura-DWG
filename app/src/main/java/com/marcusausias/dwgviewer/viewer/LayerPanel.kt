@@ -18,6 +18,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.Box
+import com.marcusausias.dwgviewer.nativebridge.LayerStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
@@ -36,6 +39,8 @@ fun LayerPanel(
     onIsolate: (Int) -> Unit,
     onShowAll: () -> Unit,
     modifier: Modifier = Modifier,
+    styles: List<LayerStyle> = emptyList(),
+    onReset: () -> Unit = {},
 ) {
     Column(modifier = modifier.background(MaterialTheme.colorScheme.surface)) {
         Row(
@@ -47,8 +52,15 @@ fun LayerPanel(
                 text = "Capas (${layers.size})",
                 style = MaterialTheme.typography.titleSmall,
             )
-            if (hiddenLayers.isNotEmpty()) {
-                TextButton(onClick = onShowAll) { Text("Ver todas") }
+            Row {
+                // "Como en el DWG" vuelve a ocultar lo que el proyectista dejó
+                // apagado o congelado, que es como arranca el plano.
+                if (styles.any { it.hiddenInFile }) {
+                    TextButton(onClick = onReset) { Text("Como en el DWG") }
+                }
+                if (hiddenLayers.isNotEmpty()) {
+                    TextButton(onClick = onShowAll) { Text("Ver todas") }
+                }
             }
         }
 
@@ -65,6 +77,13 @@ fun LayerPanel(
                         checked = index !in hiddenLayers,
                         onCheckedChange = { onToggle(index) },
                         modifier = Modifier.size(40.dp),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(14.dp)
+                            .background(
+                                Color(PlanColors.forBackground(styles.getOrNull(index)?.color ?: 0, false)),
+                            ),
                     )
                     Text(
                         // Una capa sin nombre aparece así en el propio DWG.

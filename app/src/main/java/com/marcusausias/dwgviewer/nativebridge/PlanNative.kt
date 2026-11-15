@@ -12,6 +12,14 @@ data class PlanText(
     val layerId: Int,
 )
 
+/** Estilo con el que una capa viene del DWG. */
+data class LayerStyle(
+    /** ARGB, o 0 para el color de primer plano. */
+    val color: Int,
+    /** Cierto si estaba apagada o congelada al guardar el plano. */
+    val hiddenInFile: Boolean,
+)
+
 /** Tipo de punto notable al que se ha enganchado el dedo. */
 enum class SnapType {
     NONE, ENDPOINT, INTERSECTION, MIDPOINT, PERPENDICULAR, ON_EDGE;
@@ -43,12 +51,20 @@ data class SnapHit(
 data class EntityMeasure(
     val length: Double,
     val approximate: Boolean,
+    /** Superficie encerrada si la entidad es un contorno cerrado; si no, 0. */
+    val area: Double,
     val points: List<Pair<Double, Double>>,
 )
 
-/** Un tramo del buffer de vértices correspondiente a una capa. */
+/**
+ * Un tramo del buffer de vértices: la geometría de una capa con un color.
+ *
+ * [color] es ARGB (0xFFRRGGBB), o 0 para el color de primer plano, que es negro
+ * sobre fondo claro y blanco sobre oscuro.
+ */
 data class RenderBatch(
     val layerId: Int,
+    val color: Int,
     val firstVertex: Int,
     val vertexCount: Int,
 )
@@ -78,9 +94,15 @@ class NativePlan private constructor(private var handle: Long) : AutoCloseable {
 
     fun batches(): List<RenderBatch> {
         val flat = PlanNative.getBatches(handle) ?: return emptyList()
-        return (flat.indices step 3).map { i ->
-            RenderBatch(flat[i], flat[i + 1], flat[i + 2])
+        return (flat.indices step 4).map { i ->
+            RenderBatch(flat[i], flat[i + 1], flat[i + 2], flat[i + 3])
         }
+    }
+
+    /** Color de cada capa y si el DWG la trae apagada o congelada. */
+    fun layerStyles(): List<LayerStyle> {
+        val flat = PlanNative.getLayerStyles(handle) ?: return emptyList()
+        return (flat.indices step 2).map { i -> LayerStyle(flat[i], flat[i + 1] != 0) }
     }
 
     fun layers(): List<String> = PlanNative.getLayers(handle)?.toList() ?: emptyList()
@@ -151,14 +173,19 @@ class NativePlan private constructor(private var handle: Long) : AutoCloseable {
     /** Longitud de una entidad siguiéndola entera, con los arcos exactos. */
     fun measureEntity(entityIndex: Int): EntityMeasure? {
         val raw = PlanNative.measureEntity(handle, entityIndex) ?: return null
-        if (raw.size < 3) return null
+        if (raw.size < 4) return null
 
-        val count = raw[2].toInt()
+        val count = raw[3].toInt()
         val points = ArrayList<Pair<Double, Double>>(count)
         for (i in 0 until count) {
-            points.add(raw[3 + i * 2] to raw[4 + i * 2])
+            points.add(raw[4 + i * 2] to raw[5 + i * 2])
         }
-        return EntityMeasure(length = raw[0], approximate = raw[1] != 0.0, points = points)
+        return EntityMeasure(
+            length = raw[0],
+            approximate = raw[1] != 0.0,
+            area = raw[2],
+            points = points,
+        )
     }
 
     /** Nombre del símbolo del que procede la entidad, si viene de alguno. */
@@ -243,6 +270,7 @@ object PlanNative {
     external fun getVertexBuffer(handle: Long): ByteBuffer?
     external fun getBatches(handle: Long): IntArray?
     external fun getLayers(handle: Long): Array<String>?
+    external fun getLayerStyles(handle: Long): IntArray?
     external fun getBounds(handle: Long): DoubleArray?
     external fun getEntityCount(handle: Long): Int
     external fun getVisibleTexts(

@@ -29,6 +29,11 @@ data class Measurement(
     val count: Int = 0,
     val symbol: String = "",
     val label: String = "",
+    /**
+     * Superficie encerrada, solo en "Seguir" sobre un contorno cerrado. Ahí
+     * [value] es el perímetro y este campo la superficie.
+     */
+    val area: Double = 0.0,
 ) {
     val isArea: Boolean get() = tool == MeasureTool.AREA
     val isCount: Boolean get() = tool == MeasureTool.COUNT
@@ -42,6 +47,10 @@ data class Measurement(
             else if (isArea) append(" u²")
             // Una cifra que sale de geometría teselada no es exacta, y quien la
             // lee tiene derecho a saberlo antes de meterla en un presupuesto.
+            if (area > 0.0) {
+                append(" · ").append(formatNumber(area, decimals))
+                append(if (unit.isNotBlank()) " $unit²" else " u²")
+            }
             if (approximate) append(" (aprox.)")
         }
     }

@@ -2,6 +2,7 @@ package com.marcusausias.dwgviewer.viewer
 
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
+import com.marcusausias.dwgviewer.nativebridge.RenderBatch
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import javax.microedition.khronos.egl.EGLConfig
@@ -21,7 +22,7 @@ class PlanRenderer : GLSurfaceView.Renderer {
 
     private class Upload(
         val vertices: ByteBuffer,
-        val batches: List<com.marcusausias.dwgviewer.nativebridge.RenderBatch>,
+        val batches: List<RenderBatch>,
         val originX: Double,
         val originY: Double,
     )
@@ -32,9 +33,11 @@ class PlanRenderer : GLSurfaceView.Renderer {
     // pierde sus búferes y hay que volver a subirlos, o la pantalla se queda
     // en blanco con el plano aparentemente cargado.
     @Volatile private var current: Upload? = null
+    @Volatile private var clearRequested = false
     @Volatile private var camera: Camera = Camera()
     @Volatile private var hiddenLayers: Set<Int> = emptySet()
     @Volatile private var background: Int = 0
+    @Volatile private var lineWidth: Float = 1f
 
     private var program = 0
     private var matrixLocation = 0
@@ -43,22 +46,43 @@ class PlanRenderer : GLSurfaceView.Renderer {
     private var vertexBuffer = 0
     private var vertexArray = 0
 
-    private var batches: List<com.marcusausias.dwgviewer.nativebridge.RenderBatch> = emptyList()
+    private var batches: List<RenderBatch> = emptyList()
     private var originX = 0.0
     private var originY = 0.0
     private var uploaded = false
 
-    /** Entrega el plano. La subida real ocurre en el hilo de GL. */
+    /**
+     * Entrega el plano. La subida real ocurre en el hilo de GL.
+     *
+     * Los vértices se copian a un búfer propio. El que llega apunta a memoria
+     * del lado nativo, que se libera al cerrar el plano; y este objeto necesita
+     * los datos después de eso, cada vez que Android recrea el contexto de GL.
+     * Sin la copia, volver de segundo plano tras abrir otro plano leería
+     * memoria ya liberada. Son unos pocos megas durante la vida de la vista.
+     */
     fun setPlan(
         vertices: ByteBuffer,
-        batches: List<com.marcusausias.dwgviewer.nativebridge.RenderBatch>,
+        batches: List<RenderBatch>,
         originX: Double,
         originY: Double,
     ) {
-        val upload = Upload(vertices, batches, originX, originY)
+        val source = vertices.duplicate()
+        source.position(0)
+        val copy = ByteBuffer.allocateDirect(source.remaining()).order(ByteOrder.nativeOrder())
+        copy.put(source)
+        copy.position(0)
+
+        val upload = Upload(copy, batches, originX, originY)
         current = upload
         pending = upload
-        uploaded = false
+        clearRequested = false
+    }
+
+    /** Quita el plano de pantalla: se está cargando otro o no hay ninguno. */
+    fun clearPlan() {
+        current = null
+        pending = null
+        clearRequested = true
     }
 
     fun setCamera(camera: Camera) { this.camera = camera }
@@ -66,6 +90,9 @@ class PlanRenderer : GLSurfaceView.Renderer {
     fun setHiddenLayers(hidden: Set<Int>) { hiddenLayers = hidden }
 
     fun setDarkBackground(dark: Boolean) { background = if (dark) 1 else 0 }
+
+    /** Grosor de línea en píxeles; en pantallas densas un píxel casi no se ve. */
+    fun setLineWidth(width: Float) { lineWidth = width }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         program = buildProgram()
@@ -86,35 +113,54 @@ class PlanRenderer : GLSurfaceView.Renderer {
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        if (clearRequested) {
+            clearRequested = false
+            releaseBuffers()
+            batches = emptyList()
+            uploaded = false
+        }
         pending?.let { upload ->
             uploadVertices(upload)
-            pending = null
+            // Solo se da por hecho si nadie ha entregado otro plano entretanto.
+            if (pending === upload) pending = null
         }
 
-        if (background == 1) {
+        val dark = background == 1
+        if (dark) {
             GLES30.glClearColor(0.07f, 0.08f, 0.09f, 1f)
         } else {
             GLES30.glClearColor(0.937f, 0.937f, 0.918f, 1f)
         }
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
 
-        if (!uploaded || batches.isEmpty()) return
+        if (!uploaded || batches.isEmpty() || program == 0) return
 
         val view = camera
         if (!view.isUsable) return
 
         GLES30.glUseProgram(program)
         GLES30.glUniformMatrix4fv(matrixLocation, 1, false, view.toMatrix(originX, originY), 0)
+        GLES30.glLineWidth(lineWidth)
 
-        if (background == 1) {
-            GLES30.glUniform4f(colorLocation, 0.90f, 0.90f, 0.88f, 1f)
-        } else {
-            GLES30.glUniform4f(colorLocation, 0.10f, 0.11f, 0.13f, 1f)
-        }
+        val hidden = hiddenLayers
+        var lastColor = Int.MIN_VALUE
+        var first = true
 
         GLES30.glBindVertexArray(vertexArray)
         for (batch in batches) {
-            if (batch.layerId in hiddenLayers) continue
+            if (batch.layerId in hidden) continue
+            if (first || batch.color != lastColor) {
+                val argb = PlanColors.forBackground(batch.color, dark)
+                GLES30.glUniform4f(
+                    colorLocation,
+                    ((argb shr 16) and 0xFF) / 255f,
+                    ((argb shr 8) and 0xFF) / 255f,
+                    (argb and 0xFF) / 255f,
+                    1f,
+                )
+                lastColor = batch.color
+                first = false
+            }
             GLES30.glDrawArrays(GLES30.GL_LINES, batch.firstVertex, batch.vertexCount)
         }
         GLES30.glBindVertexArray(0)
@@ -123,7 +169,7 @@ class PlanRenderer : GLSurfaceView.Renderer {
     private fun uploadVertices(upload: Upload) {
         releaseBuffers()
 
-        val buffer = upload.vertices.order(ByteOrder.nativeOrder())
+        val buffer = upload.vertices.duplicate().order(ByteOrder.nativeOrder())
         buffer.position(0)
 
         val arrays = IntArray(1)
@@ -182,21 +228,26 @@ class PlanRenderer : GLSurfaceView.Renderer {
     }
 
     private companion object {
-        const val VERTEX_SHADER = """#version 300 es
+        // "#version" tiene que ser lo primero del texto, sin nada delante: con
+        // un salto de línea o un espacio antes, algunos controladores rechazan
+        // el shader y el plano no se dibuja.
+        val VERTEX_SHADER = """
+            #version 300 es
             uniform mat4 uMatrix;
             in vec2 aPosition;
             void main() {
                 gl_Position = uMatrix * vec4(aPosition, 0.0, 1.0);
             }
-        """
+        """.trimIndent()
 
-        const val FRAGMENT_SHADER = """#version 300 es
+        val FRAGMENT_SHADER = """
+            #version 300 es
             precision mediump float;
             uniform vec4 uColor;
             out vec4 fragColor;
             void main() {
                 fragColor = uColor;
             }
-        """
+        """.trimIndent()
     }
 }

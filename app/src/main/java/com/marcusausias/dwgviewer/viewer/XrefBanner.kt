@@ -65,7 +65,9 @@ fun XrefBanner(
             }
         }
 
-        missing.forEach { xref ->
+        // Con muchas referencias la banda taparía el plano entero: se enseñan
+        // las primeras y el resto se resuelve eligiendo la carpeta.
+        missing.take(MAX_LISTED).forEach { xref ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -84,5 +86,14 @@ fun XrefBanner(
                 }
             }
         }
+        if (missing.size > MAX_LISTED) {
+            Text(
+                text = "…y ${missing.size - MAX_LISTED} más.",
+                color = Color.White,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
+
+private const val MAX_LISTED = 3

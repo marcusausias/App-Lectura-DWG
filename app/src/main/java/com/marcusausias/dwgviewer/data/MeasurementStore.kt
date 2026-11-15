@@ -84,6 +84,7 @@ class MeasurementStore(context: Context) {
             put("count", measurement.count)
             put("symbol", measurement.symbol)
             put("label", measurement.label)
+            put("area", measurement.area)
         }
     }
 
@@ -110,6 +111,7 @@ class MeasurementStore(context: Context) {
             count = json.optInt("count", 0),
             symbol = json.optString("symbol"),
             label = json.optString("label"),
+            area = json.optDouble("area", 0.0),
         )
     }
 

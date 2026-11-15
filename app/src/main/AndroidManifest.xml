@@ -9,8 +9,12 @@
       externas.
     -->
 
+    <!-- El plano se dibuja con OpenGL ES 3.0. -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+
     <application
         android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.AppLecturaDWG">
@@ -18,11 +22,36 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
             android:theme="@style/Theme.AppLecturaDWG">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              "Abrir con…" para los DWG. No hay un tipo MIME único: según la
+              app de origen llegan con cualquiera de estos. No se incluye el
+              binario genérico (application/octet-stream) para no ofrecerse
+              como visor de cualquier archivo desconocido; esos planos se abren
+              desde dentro de la app.
+            -->
+            <intent-filter android:label="@string/app_name">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="image/vnd.dwg" />
+                <data android:mimeType="image/x-dwg" />
+                <data android:mimeType="application/acad" />
+                <data android:mimeType="application/x-acad" />
+                <data android:mimeType="application/dwg" />
+                <data android:mimeType="application/x-dwg" />
+                <data android:mimeType="application/autocad_dwg" />
+                <data android:mimeType="application/x-autocad" />
+                <data android:mimeType="drawing/dwg" />
             </intent-filter>
         </activity>
 

@@ -49,7 +49,17 @@ fun TextOverlay(
                 // hace al revés, de ahí el cambio de signo.
                 val degrees = (-text.rotation * 180.0 / PI).toFloat()
                 native.rotate(degrees, screenX, screenY)
-                native.drawText(text.content, screenX, screenY, paint)
+                if ('\n' !in text.content) {
+                    native.drawText(text.content, screenX, screenY, paint)
+                } else {
+                    // Un texto de varias líneas baja un interlineado por línea,
+                    // ya dentro del giro, así que basta con sumar en vertical.
+                    var lineY = screenY
+                    for (line in text.content.split('\n')) {
+                        native.drawText(line, screenX, lineY, paint)
+                        lineY += sizePx * LINE_SPACING
+                    }
+                }
                 native.restore()
             }
         }
@@ -63,3 +73,6 @@ fun TextOverlay(
  * de textos, dibujarlos igualmente es lo que rompería la fluidez del paneo.
  */
 const val MIN_READABLE_PX = 7f
+
+/** Interlineado de los textos de varias líneas, el habitual de AutoCAD. */
+private const val LINE_SPACING = 1.66f

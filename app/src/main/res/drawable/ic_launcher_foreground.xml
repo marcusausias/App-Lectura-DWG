@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Planta esquemática con una cota: lo que hace la app, en un icono. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Muros de la planta, con el hueco de una puerta. -->
+    <path
+        android:pathData="M34,62 L34,36 L74,36 L74,62 L60,62 M50,62 L34,62 M54,36 L54,50"
+        android:strokeColor="#1A1C20"
+        android:strokeWidth="4"
+        android:strokeLineCap="square"
+        android:fillColor="#00000000" />
+    <!-- Barrido de la puerta. -->
+    <path
+        android:pathData="M60,62 A10,10 0 0,0 50,52 L50,62"
+        android:strokeColor="#1A1C20"
+        android:strokeWidth="1.6"
+        android:fillColor="#00000000" />
+    <!-- Línea de cota con sus marcas. -->
+    <path
+        android:pathData="M34,72 L74,72 M34,68 L34,76 M74,68 L74,76"
+        android:strokeColor="#C0392B"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

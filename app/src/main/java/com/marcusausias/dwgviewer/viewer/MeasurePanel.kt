@@ -37,6 +37,7 @@ fun MeasureToolbar(
     onFinish: () -> Unit,
     onUndo: () -> Unit,
     modifier: Modifier = Modifier,
+    decimals: Int = 3,
 ) {
     Column(modifier = modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))) {
         Row(
@@ -66,7 +67,7 @@ fun MeasureToolbar(
                     } else {
                         // Ver la medida mientras se marca evita tener que
                         // cerrarla solo para comprobar si va bien.
-                        val value = Measurement.formatNumber(pending.preview(), 3)
+                        val value = Measurement.formatNumber(pending.preview(), decimals)
                         "${pending.points.size} puntos · $value"
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -95,6 +96,10 @@ fun MeasurementList(
     onRemove: (Long) -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier,
+    onUnitChange: (String) -> Unit = {},
+    onDecimalsChange: (Int) -> Unit = {},
+    onExport: () -> Unit = {},
+    onShare: () -> Unit = {},
 ) {
     Column(modifier = modifier.background(MaterialTheme.colorScheme.surface)) {
         Row(
@@ -105,6 +110,41 @@ fun MeasurementList(
             Text("Mediciones (${measurements.size})", style = MaterialTheme.typography.titleSmall)
             if (measurements.isNotEmpty()) {
                 TextButton(onClick = onClear) { Text("Borrar todas") }
+            }
+        }
+
+        // La unidad es una etiqueta, no una conversión: las cifras son siempre
+        // las del dibujo. Quien mide sabe si su plano está en metros o en
+        // milímetros, y aquí lo indica para que el número lo lleve detrás.
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Unidad del dibujo", style = MaterialTheme.typography.bodySmall)
+            listOf("" to "—", "m" to "m", "cm" to "cm", "mm" to "mm").forEach { (value, label) ->
+                FilterChip(
+                    selected = unit == value,
+                    onClick = { onUnitChange(value) },
+                    label = { Text(label) },
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Decimales: $decimals", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { onDecimalsChange(decimals - 1) }, enabled = decimals > 0) {
+                Text("−")
+            }
+            TextButton(onClick = { onDecimalsChange(decimals + 1) }, enabled = decimals < 6) {
+                Text("+")
+            }
+            if (measurements.isNotEmpty()) {
+                TextButton(onClick = onExport) { Text("Guardar CSV") }
+                TextButton(onClick = onShare) { Text("Compartir") }
             }
         }
 

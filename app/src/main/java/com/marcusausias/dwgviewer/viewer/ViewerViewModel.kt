@@ -5,7 +5,10 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.marcusausias.dwgviewer.data.DwgFileReader
+import com.marcusausias.dwgviewer.data.MeasurementExport
 import com.marcusausias.dwgviewer.data.MeasurementStore
+import com.marcusausias.dwgviewer.data.SettingsStore
+import com.marcusausias.dwgviewer.nativebridge.LayerStyle
 import com.marcusausias.dwgviewer.nativebridge.NativePlan
 import com.marcusausias.dwgviewer.nativebridge.PlanText
 import com.marcusausias.dwgviewer.xref.ResolvedXref
@@ -28,6 +31,8 @@ sealed interface PlanState {
         val layers: List<String>,
         val entityCount: Int,
         val bounds: DoubleArray,
+        val name: String = "",
+        val layerStyles: List<LayerStyle> = emptyList(),
         val xrefs: List<ResolvedXref> = emptyList(),
     ) : PlanState {
         val missingXrefs: List<ResolvedXref> get() = xrefs.filterNot { it.isResolved }
@@ -38,6 +43,7 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
 
     private val reader = DwgFileReader(application)
     private val measurementStore = MeasurementStore(application)
+    private val settings = SettingsStore(application)
     private val xrefStore = XrefStore(application)
     private val xrefResolver = XrefResolver(application, xrefStore)
 
@@ -56,7 +62,7 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
     private val _visibleTexts = MutableStateFlow<List<PlanText>>(emptyList())
     val visibleTexts: StateFlow<List<PlanText>> = _visibleTexts.asStateFlow()
 
-    private val _darkBackground = MutableStateFlow(false)
+    private val _darkBackground = MutableStateFlow(settings.darkBackground)
     val darkBackground: StateFlow<Boolean> = _darkBackground.asStateFlow()
 
     private val _measurements = MutableStateFlow<List<Measurement>>(emptyList())
@@ -68,16 +74,26 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
     private val _snapPreview = MutableStateFlow<SnapPreview?>(null)
     val snapPreview: StateFlow<SnapPreview?> = _snapPreview.asStateFlow()
 
-    private val _decimals = MutableStateFlow(3)
+    private val _decimals = MutableStateFlow(settings.decimals.coerceIn(0, 6))
     val decimals: StateFlow<Int> = _decimals.asStateFlow()
 
-    private val _unit = MutableStateFlow("")
+    private val _unit = MutableStateFlow(settings.unit)
     val unit: StateFlow<String> = _unit.asStateFlow()
 
     private var fitPending = true
     private var nextMeasurementId = 1L
     private var currentPlanUri: Uri? = null
     private var currentPlanKey: String? = null
+
+    /** Último plano abierto, para ofrecer retomarlo al arrancar. */
+    val lastPlanName: String? get() = settings.lastPlanName
+    val lastPlanUri: Uri? get() = settings.lastPlanUri?.let(Uri::parse)
+
+    /** Aviso breve para el usuario: resultado de guardar, por ejemplo. */
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    fun dismissNotice() { _notice.value = null }
 
     /**
      * Recuerda la carpeta del proyecto.
@@ -98,6 +114,8 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
             // adelante: valdrá para esta sesión, y la próxima vez se pedirá.
         }
         xrefStore.projectTreeUri = treeUri.toString()
+        // Con la carpeta nueva pueden aparecer las referencias que faltaban.
+        currentPlanUri?.let { open(it) }
     }
 
     /** Enlaza a mano una xref que no se ha podido localizar, y lo recuerda. */
@@ -108,15 +126,45 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun open(uri: Uri) {
-        viewModelScope.launch {
-            closeCurrent()
-            currentPlanUri = uri
-            _state.value = PlanState.Loading
+        // Una segunda apertura mientras la primera sigue en marcha dejaría dos
+        // planos nativos vivos y solo uno a la vista.
+        if (_state.value is PlanState.Loading) return
 
-            val result = withContext(Dispatchers.IO) { openBlocking(uri) }
+        viewModelScope.launch {
+            // Primero se deja de enseñar el plano y luego se libera: así la
+            // vista nunca llega a pedir datos a un plano ya cerrado.
+            val previous = (_state.value as? PlanState.Ready)?.plan
+            _state.value = PlanState.Loading
+            closeCurrent(previous)
+            currentPlanUri = uri
+
+            // El permiso persistente es lo que permite reabrir el plano en la
+            // siguiente sesión sin pasar otra vez por el selector.
+            try {
+                getApplication<Application>().contentResolver.takePersistableUriPermission(
+                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (error: SecurityException) {
+                // No todos los orígenes lo conceden; el plano se abre igual.
+            }
+
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    openBlocking(uri)
+                } catch (error: Throwable) {
+                    PlanState.Failed("No se pudo abrir el plano: ${error.message ?: error.javaClass.simpleName}")
+                }
+            }
             _state.value = result
 
             if (result is PlanState.Ready) {
+                settings.lastPlanUri = uri.toString()
+                settings.lastPlanName = result.name
+                // Las capas que el proyectista dejó apagadas o congeladas
+                // arrancan ocultas, como en AutoCAD.
+                _hiddenLayers.value = result.layerStyles
+                    .mapIndexedNotNull { index, style -> index.takeIf { style.hiddenInFile } }
+                    .toSet()
                 fitPending = true
                 applyFitIfPending()
                 refreshTexts()
@@ -133,10 +181,18 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
 
         val planKey = planKeyFor(uri)
         currentPlanKey = planKey
+        val document = reader.describe(uri)
+        val safeKey = planKey.replace(Regex("[^A-Za-z0-9._-]"), "_").take(100)
 
         // Antes de procesar el plano hay que saber qué archivos externos busca,
-        // porque su contenido forma parte de la escena resultante.
-        val declarations = NativePlan.inspectXrefs(local.absolutePath)
+        // porque su contenido forma parte de la escena resultante. Averiguarlo
+        // obliga a leer el DWG entero, así que la respuesta se guarda junto a la
+        // caché: sin eso, reabrir un plano costaría lo mismo que la primera vez.
+        val xrefIndex = File(getApplication<Application>().cacheDir, "plan-$safeKey.xrefs")
+        val declarations = readXrefIndex(xrefIndex, local.length(), document.modified)
+            ?: NativePlan.inspectXrefs(local.absolutePath).also {
+                writeXrefIndex(xrefIndex, local.length(), document.modified, it)
+            }
         val treeUri = xrefStore.projectTreeUri?.let(Uri::parse)
         val resolved = xrefResolver.resolve(planKey, declarations, treeUri)
 
@@ -144,12 +200,15 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
             .filter { it.isResolved }
             .associate { it.blockName to it.localFile!!.absolutePath }
 
-        val cacheFile = File(getApplication<Application>().cacheDir, "plan-${local.name}.bin")
+        // La caché se nombra por el plano, no por la copia temporal, y se sella
+        // con la fecha del documento original: la copia tiene nombre y fecha
+        // nuevos en cada apertura, y con ellos la caché no acertaría nunca.
+        val cacheFile = File(getApplication<Application>().cacheDir, "plan-$safeKey.bin")
         val plan = NativePlan.open(
             dwgPath = local.absolutePath,
             cachePath = cacheFile.absolutePath,
             sourceSize = local.length(),
-            sourceModified = local.lastModified(),
+            sourceModified = document.modified,
             variant = variantOf(resolved),
             xrefs = xrefPaths,
         )
@@ -171,8 +230,41 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
             layers = plan.layers(),
             entityCount = plan.entityCount(),
             bounds = bounds,
+            name = document.name,
+            layerStyles = plan.layerStyles(),
             xrefs = resolved,
         )
+    }
+
+    private fun readXrefIndex(file: File, size: Long, modified: Long): List<Pair<String, String>>? {
+        if (!file.exists()) return null
+        return try {
+            val json = org.json.JSONObject(file.readText())
+            if (json.optLong("size") != size || json.optLong("modified") != modified) return null
+            val flat = json.getJSONArray("xrefs")
+            (0 until flat.length() step 2).map { flat.getString(it) to flat.getString(it + 1) }
+        } catch (error: Exception) {
+            null
+        }
+    }
+
+    private fun writeXrefIndex(
+        file: File,
+        size: Long,
+        modified: Long,
+        declarations: List<Pair<String, String>>,
+    ) {
+        try {
+            val flat = org.json.JSONArray()
+            declarations.forEach { (name, path) -> flat.put(name).put(path) }
+            file.writeText(
+                org.json.JSONObject()
+                    .put("size", size).put("modified", modified).put("xrefs", flat)
+                    .toString(),
+            )
+        } catch (error: Exception) {
+            // Solo es una optimización: sin ella se vuelve a inspeccionar.
+        }
     }
 
     /**
@@ -245,6 +337,15 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
         refreshTexts()
     }
 
+    /** Deja las capas como venían en el DWG: ocultas las apagadas o congeladas. */
+    fun resetLayers() {
+        val ready = _state.value as? PlanState.Ready ?: return
+        _hiddenLayers.value = ready.layerStyles
+            .mapIndexedNotNull { index, style -> index.takeIf { style.hiddenInFile } }
+            .toSet()
+        refreshTexts()
+    }
+
     fun showAllLayers() {
         _hiddenLayers.value = emptySet()
         refreshTexts()
@@ -252,12 +353,15 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleBackground() {
         _darkBackground.value = !_darkBackground.value
+        settings.darkBackground = _darkBackground.value
     }
 
     private fun applyFitIfPending() {
         if (!fitPending) return
         val ready = _state.value as? PlanState.Ready ?: return
-        if (!_camera.value.isUsable && _camera.value.viewportWidth == 0) return
+        // Sin tamaño de pantalla todavía no hay nada que encuadrar: se deja
+        // pendiente y se aplica en cuanto la vista informe de sus medidas.
+        if (_camera.value.viewportWidth <= 0 || _camera.value.viewportHeight <= 0) return
 
         _camera.value = _camera.value.fitTo(ready.bounds)
         fitPending = false
@@ -314,6 +418,7 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
                         tool = tool,
                         points = measure.points,
                         value = measure.length,
+                        area = measure.area,
                         approximate = measure.approximate,
                     ),
                 )
@@ -425,9 +530,44 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
         persistMeasurements()
     }
 
-    fun setDecimals(value: Int) { _decimals.value = value.coerceIn(0, 6) }
+    fun setDecimals(value: Int) {
+        _decimals.value = value.coerceIn(0, 6)
+        settings.decimals = _decimals.value
+    }
 
-    fun setUnit(value: String) { _unit.value = value.trim() }
+    fun setUnit(value: String) {
+        _unit.value = value.trim()
+        settings.unit = _unit.value
+    }
+
+    /** Nombre de archivo propuesto para guardar las mediciones. */
+    fun exportFileName(): String =
+        MeasurementExport.fileNameFor((_state.value as? PlanState.Ready)?.name.orEmpty())
+
+    /** Mediciones del plano actual en CSV, listas para una hoja de cálculo. */
+    fun exportCsv(): String = MeasurementExport.toCsv(
+        planName = (_state.value as? PlanState.Ready)?.name.orEmpty(),
+        measurements = _measurements.value,
+        decimals = _decimals.value,
+        unit = _unit.value,
+    )
+
+    /** Escribe el CSV en el documento que el usuario ha elegido. */
+    fun saveCsv(destination: Uri) {
+        val content = exportCsv()
+        viewModelScope.launch {
+            val saved = withContext(Dispatchers.IO) {
+                try {
+                    getApplication<Application>().contentResolver
+                        .openOutputStream(destination, "wt")
+                        ?.use { it.write(content.toByteArray(Charsets.UTF_8)) } != null
+                } catch (error: Exception) {
+                    false
+                }
+            }
+            _notice.value = if (saved) "Mediciones guardadas." else "No se pudo guardar el archivo."
+        }
+    }
 
     private fun addMeasurement(measurement: Measurement) {
         _measurements.value = _measurements.value + measurement
@@ -463,8 +603,9 @@ class ViewerViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun closeCurrent() {
-        (_state.value as? PlanState.Ready)?.plan?.close()
+    private fun closeCurrent(plan: NativePlan? = (_state.value as? PlanState.Ready)?.plan) {
+        plan?.close()
+        _notice.value = null
         _visibleTexts.value = emptyList()
         _hiddenLayers.value = emptySet()
         // Las mediciones son de un plano concreto: conservarlas en pantalla al
