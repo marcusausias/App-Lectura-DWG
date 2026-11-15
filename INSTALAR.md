@@ -1,5 +1,10 @@
 # Instalar la app en tu Android, paso a paso
 
+> **Atajo:** no hace falta compilar para probar la app. Cada cambio subido a
+> GitHub genera el APK: pestaña *Actions* del repositorio → última ejecución en
+> verde → *Artifacts* → `planos-dwg-apk`. Descomprime, pasa el `.apk` al móvil y
+> ábrelo. Esta guía es para cuando quieras compilarla tú.
+
 Esta guía supone que no has compilado nunca una app de Android. Si ya tienes
 Android Studio con el NDK, salta al paso 3.
 
@@ -57,7 +62,7 @@ terminal **Git Bash** que trae.
 Abre la terminal y ejecuta:
 
 ```bash
-git clone -b claude/dwg-reader-progress-gosjur https://github.com/marcusausias/App-Lectura-DWG
+git clone https://github.com/marcusausias/App-Lectura-DWG
 cd App-Lectura-DWG
 ```
 
@@ -154,7 +159,8 @@ Hace exactamente lo mismo. El paso 3 hay que haberlo hecho igualmente.
 
 Al abrir la app, pulsa **Abrir** y elige un DWG del móvil. Si el plano tiene
 referencias externas, pulsa **Carpeta** e indica la carpeta del proyecto para que
-las busque solas.
+las busque solas. También puedes abrir un DWG desde el gestor de archivos del
+móvil con «Abrir con… → Planos DWG».
 
 Por orden de importancia:
 
@@ -223,6 +229,8 @@ $ANDROID_HOME/platform-tools/adb devices
 ```
 Debe aparecer tu móvil como `device`, no como `unauthorized`.
 
-**Errores de compilación de Kotlin**
-Es lo más probable en el primer intento: ninguna línea del código de interfaz se
-ha llegado a ejecutar nunca. Cópiame el error tal cual y lo arreglo.
+**`INSTALL_FAILED_UPDATE_INCOMPATIBLE`**
+Tienes instalada una versión firmada con otra clave (por ejemplo, una compilada
+antes de que el proyecto llevase su propia clave de depuración). Desinstala la
+app del móvil y vuelve a instalar. Ojo: desinstalar borra las mediciones
+guardadas; expórtalas antes a CSV si las necesitas.

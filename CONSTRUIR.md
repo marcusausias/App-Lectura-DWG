@@ -19,8 +19,9 @@ En Android Studio: **Settings → SDK Tools** y marca `NDK (Side by side)` y
 
 ## Paso 1 — Compilar LibreDWG para Android
 
-Solo hace falta hacerlo una vez. El script clona LibreDWG en `vendor/`, lo
-compila para las dos arquitecturas ARM y deja los `.a` donde CMake los busca.
+Solo hace falta hacerlo una vez. El script descarga LibreDWG en `vendor/` (la
+versión fijada en `tools/libredwg-version.sh`), lo compila para ARM de 64 bits
+y deja el `.a` donde CMake lo busca.
 
 ```bash
 export ANDROID_NDK_HOME=~/Library/Android/sdk/ndk/30.0.15729638   # Mac
@@ -128,8 +129,12 @@ Lo que hay que mirar, por orden de importancia:
 5. **Fondo.** Alterna claro y oscuro; a pleno sol suele leerse mejor el claro.
 
 Si el plano se abre pero sale muy vacío, es que trae tipos de entidad que
-todavía no se convierten. Quedan pendientes los sombreados (HATCH) y las
-directrices (LEADER).
+todavía no se convierten (imágenes, tablas, MLINE, MULTILEADER, sólidos 3D).
+`tools/probar-dwg.sh plano.dwg` dice cuántas hay de cada tipo.
+
+Las capas que en el DWG estaban apagadas o congeladas arrancan ocultas. Si echas
+en falta algo, mira en *Capas*: *Ver todas* las enciende y *Como en el DWG*
+vuelve al estado original.
 
 ### Referencias externas
 
@@ -164,7 +169,7 @@ Con un plano abierto, en la barra de abajo:
 | **Distancia** | Dos toques y se cierra sola |
 | **Polilínea** | Toques seguidos, luego *Cerrar*; suma los tramos |
 | **Superficie** | Marca el contorno y *Cerrar*; área por la fórmula de Gauss |
-| **Seguir** | Toca una línea del plano y la mide entera, arcos incluidos |
+| **Seguir** | Toca una línea del plano y la mide entera, arcos incluidos. Sobre un contorno cerrado (una polilínea de estancia, el borde de un sombreado) da además la superficie |
 | **Contar** | Toca un símbolo y dice cuántos iguales hay |
 
 Al apoyar el dedo aparece una cruz amarilla con el punto al que engancharía y su
@@ -189,42 +194,68 @@ Lo que conviene comprobar además:
   ahí, con sus etiquetas.** Se guardan en `filesDir`, no en la caché, para que
   Android no pueda borrarlas al quedarse sin espacio.
 - Abrir otro plano y volver al primero: cada uno con las suyas, sin mezclarse.
+- En *Medidas*, elegir la unidad del dibujo y los decimales, y **Guardar CSV**:
+  el archivo debe abrirse en Excel con cada dato en su columna y los totales al
+  final.
 
 ---
 
-## Los tests del núcleo geométrico
+## Los tests
 
-No necesitan Android ni dispositivo: corren en el ordenador y son los que
-protegen la exactitud de las mediciones.
+Ninguno necesita móvil ni emulador.
+
+**Núcleo geométrico.** Son los que protegen la exactitud de las mediciones:
 
 ```bash
 cmake -S core -B build-core -DDWGCORE_BUILD_TESTS=ON
+```
+```bash
 cmake --build build-core
-./build-core/tests/dwgcore_tests
-./build-core/tests/dwgcore_transform_tests
-./build-core/tests/dwgcore_scene_tests
-./build-core/tests/dwgcore_render_tests
-./build-core/tests/dwgcore_snap_tests
+```
+```bash
+ctest --test-dir build-core --output-on-failure
 ```
 
-Todos deben terminar con `0 fallos`. Si tocas algo de geometría, esto es lo
-primero que hay que volver a pasar.
+Todos deben pasar. Si tocas algo de geometría, esto es lo primero que hay que
+volver a ejecutar.
+
+**La app.** Arrancan la interfaz con Robolectric y abren un DWG de verdad a
+través del puente nativo, miden sobre él y exportan. Necesitan la biblioteca
+nativa compilada para el ordenador, que se prepara una vez:
+
+```bash
+tools/probar-dwg.sh --solo-compilar
+```
+```bash
+./gradlew testDebugUnitTest
+```
+
+Si no se ha preparado, los tests que abren un plano se saltan y el resto se
+ejecuta igual. Lo que estos tests **no** cubren es el dibujo con OpenGL y los
+gestos táctiles: eso solo se ve en un móvil.
 
 ---
 
 ## Analizar un DWG desde el ordenador
 
-Sin pasar por el móvil, para saber qué trae un plano por dentro:
+Sin pasar por el móvil, para saber qué saca la app de un plano:
 
 ```bash
-# Una vez: compilar las herramientas de LibreDWG para el propio ordenador
-git clone --depth 1 https://github.com/LibreDWG/libredwg.git /tmp/libredwg
-git -C /tmp/libredwg submodule update --init --depth 1
-cmake -S /tmp/libredwg -B /tmp/libredwg/build && cmake --build /tmp/libredwg/build -j
-
-# Y ya se puede analizar cualquier plano
-tools/analizar-dwg.sh /tmp/libredwg/build ~/planos/PROPUESTA.dwg
+tools/probar-dwg.sh ~/planos/PROPUESTA.dwg salida.ppm
 ```
 
-Da versión, recuento de entidades por tipo, capas, bloques y referencias
+La primera vez compila LibreDWG para el ordenador. Pasa el plano por el mismo
+código nativo que la app e imprime entidades, capas, capas ocultas, textos y los
+tipos de entidad que no se convierten; con el segundo argumento guarda además
+una imagen del plano tal como se dibujaría.
+
+`tools/analizar-dwg.sh` hace un análisis distinto, con las herramientas de
+LibreDWG: versión del archivo, recuento por tipo, bloques y referencias
 externas.
+
+## La versión de LibreDWG
+
+Está fijada a un commit en `tools/libredwg-version.sh`, que comparten el script
+de Android y el de escritorio. LibreDWG cambia nombres de campos entre
+versiones, así que no se sigue su rama principal. Para actualizar: cambia el
+commit, borra `vendor/`, recompila y pasa todos los tests.

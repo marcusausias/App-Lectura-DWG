@@ -1,0 +1,101 @@
+# Compila la app y deja el APK listo para descargar.
+#
+# Con esto no hace falta instalar Android Studio para probar una versión nueva:
+# en GitHub, pestaña Actions → la última ejecución → sección "Artifacts" →
+# "planos-dwg-apk". Dentro va el APK, que se instala en el móvil abriéndolo.
+name: Android
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Debe coincidir con ndkVersion en app/build.gradle.kts.
+  NDK_VERSION: "30.0.15729638"
+  CMAKE_VERSION: "3.22.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Instalar NDK, CMake y Ninja
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;$NDK_VERSION" "cmake;$CMAKE_VERSION" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      # LibreDWG tarda varios minutos en compilar y solo cambia cuando se toca
+      # su versión o la forma de compilarlo.
+      - name: Caché de LibreDWG
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: libredwg-${{ runner.os }}-${{ env.NDK_VERSION }}-${{ hashFiles('tools/libredwg-version.sh', 'tools/build-libredwg-android.sh', 'tools/probar-dwg.sh') }}
+
+      - name: Compilar LibreDWG para Android
+        run: |
+          if [ ! -f vendor/prebuilt/arm64-v8a/libredwg.a ]; then
+            tools/build-libredwg-android.sh
+          fi
+
+      - name: Tests del núcleo geométrico
+        run: |
+          cmake -S core -B build-core -G Ninja -DDWGCORE_BUILD_TESTS=ON
+          cmake --build build-core
+          ctest --test-dir build-core --output-on-failure
+
+      - name: Biblioteca nativa de escritorio (para los tests de la app)
+        run: tools/probar-dwg.sh --solo-compilar
+
+      - name: Tests de la app
+        run: ./gradlew testDebugUnitTest --console=plain
+
+      - name: Compilar los APK
+        run: ./gradlew lintDebug assembleRelease assembleDebug --console=plain
+
+      # El de release es el que hay que instalar: más pequeño y más fluido. El
+      # de depuración va al lado por si aquel fallase en un móvil concreto: no
+      # pasa por el reductor de código y da trazas de error completas.
+      - name: Preparar los APK
+        run: |
+          mkdir -p salida
+          cp app/build/outputs/apk/release/app-release.apk "salida/PlanosDWG-${GITHUB_SHA::7}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "salida/PlanosDWG-${GITHUB_SHA::7}-depuracion.apk"
+
+      - name: Publicar el APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: planos-dwg-apk
+          path: salida/*.apk
+          if-no-files-found: error
+
+      - name: Publicar informes si algo falla
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: informes
+          path: |
+            app/build/reports
+            app/build/test-results
+          if-no-files-found: ignore

@@ -1,5 +1,10 @@
 # App Lectura DWG — Documento base para retomar el proyecto
 
+> **Nota (noviembre de 2026):** este documento es el punto de partida histórico.
+> La app ya existe y es una app nativa de Android, no la web con DXF que aquí se
+> propone. El estado real está en [README.md](README.md). Se conserva por el
+> análisis del formato DWG y sus trampas (§7), que sigue siendo válido.
+
 > **Fecha:** 16 de agosto de 2026
 > **Estado del repo:** vacío (0 commits). Este es el primer archivo.
 > **Propósito:** punto de partida único para retomar el proyecto sin repetir trabajo ni tropezar con los errores conocidos del dominio DWG.
