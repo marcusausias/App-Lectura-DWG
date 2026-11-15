@@ -87,13 +87,9 @@ tamano_bytes() {
   stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0
 }
 
-if [ ! -d "$VENDOR" ]; then
-  echo "▶ Clonando LibreDWG en vendor/…"
-  git clone --depth 1 https://github.com/LibreDWG/libredwg.git "$VENDOR"
-fi
-
-echo "▶ Asegurando el submódulo jsmn…"
-git -C "$VENDOR" submodule update --init --depth 1
+# shellcheck source=tools/libredwg-version.sh
+. "$RAIZ/tools/libredwg-version.sh"
+obtener_libredwg "$VENDOR"
 
 for abi in "${ABIS[@]}"; do
   # Las llaves no son decorativas: el bash 3.2 que trae macOS no analiza UTF-8

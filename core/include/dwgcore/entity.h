@@ -45,8 +45,24 @@ struct Bounds {
   void merge(const Bounds& other);
 };
 
+// Color de una entidad.
+//
+// Se guarda ya resuelto como 0xFFRRGGBB. Los tres valores especiales están por
+// debajo de cualquier color real, que siempre lleva el byte alto a 0xFF:
+//   kColorForeground  el color 7 de AutoCAD: negro sobre fondo claro y blanco
+//                     sobre fondo oscuro. Lo decide quien dibuja.
+//   kColorByBlock     hereda el de la inserción que lo coloca; se resuelve al
+//                     aplanar.
+//   kColorByLayer     el de su capa; se resuelve al montar la escena, cuando ya
+//                     se sabe en qué capa acaba (una entidad en la capa "0" de
+//                     un bloque adopta la capa de la inserción).
+constexpr uint32_t kColorForeground = 0;
+constexpr uint32_t kColorByBlock = 1;
+constexpr uint32_t kColorByLayer = 2;
+
 struct Entity {
   uint64_t id = 0;
+  uint32_t color = kColorForeground;
   EntityType type = EntityType::Unknown;
   // Nombre de la capa según sale del DWG. Al montar la escena se sustituye por
   // `layerId`, que apunta a la tabla de capas y no repite la cadena 80.000

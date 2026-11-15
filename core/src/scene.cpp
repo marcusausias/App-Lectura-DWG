@@ -22,7 +22,8 @@ std::string symbolNameOf(const Entity& entity) {
 
 }  // namespace
 
-Scene buildScene(std::vector<Entity> entities, int nodeCapacity) {
+Scene buildScene(std::vector<Entity> entities, int nodeCapacity,
+                 const LayerTable* layerTable) {
   Scene scene;
   scene.entities = std::move(entities);
 
@@ -47,10 +48,19 @@ Scene buildScene(std::vector<Entity> entities, int nodeCapacity) {
       if (scene.layers.size() < 0xFFFF) {
         const uint16_t id = static_cast<uint16_t>(scene.layers.size());
         scene.layers.push_back(entity.layer);
+        LayerStyle style;
+        if (layerTable != nullptr) {
+          const auto known = layerTable->find(entity.layer);
+          if (known != layerTable->end()) style = known->second;
+        }
+        scene.layerStyles.push_back(style);
         found = byName.emplace(entity.layer, id).first;
       } else {
         entity.layerId = 0;
         entity.layer.clear();
+        if (entity.color == kColorByLayer || entity.color == kColorByBlock) {
+          entity.color = kColorForeground;
+        }
         boxes.push_back(entity.bounds);
         scene.bounds.merge(entity.bounds);
         continue;
@@ -58,6 +68,11 @@ Scene buildScene(std::vector<Entity> entities, int nodeCapacity) {
     }
     entity.layerId = found->second;
     entity.layer.clear();
+    if (entity.color == kColorByLayer) {
+      entity.color = scene.layerStyles[entity.layerId].color;
+    } else if (entity.color == kColorByBlock) {
+      entity.color = kColorForeground;
+    }
 
     const std::string symbol = symbolNameOf(entity);
     if (!symbol.empty()) {

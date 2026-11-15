@@ -19,12 +19,26 @@ struct Context {
   // que el 0 quede libre y signifique "suelto en el espacio modelo".
   uint32_t nextInstance = 1;
   uint32_t currentInstance = 0;
+
+  // Capa y color de la inserción en curso, ya resueltos contra sus
+  // contenedores. Vacía y "primer plano" fuera de cualquier bloque.
+  std::string currentLayer;
+  uint32_t currentColor = kColorForeground;
+  bool insideBlock = false;
 };
 
 void emit(Context& context, const Entity& entity, const Transform2D& transform) {
   Entity placed = transformEntity(entity, transform, context.options.maxSagitta);
   placed.blockPath = context.openBlocks;
   placed.instanceId = context.currentInstance;
+  if (context.insideBlock) {
+    if (placed.layer == "0" && !context.currentLayer.empty()) {
+      placed.layer = context.currentLayer;
+    }
+    if (placed.color == kColorByBlock) placed.color = context.currentColor;
+  } else if (placed.color == kColorByBlock) {
+    placed.color = kColorForeground;
+  }
   context.result.entities.push_back(std::move(placed));
 }
 
@@ -64,11 +78,32 @@ void expandInsert(Context& context, const InsertRef& insert,
   const uint32_t previousInstance = context.currentInstance;
   context.currentInstance = context.nextInstance++;
 
+  // Una inserción en la capa "0" o con color "por bloque" hereda a su vez de
+  // la que la contiene, igual que la geometría.
+  const std::string previousLayer = context.currentLayer;
+  const uint32_t previousColor = context.currentColor;
+  const bool previousInside = context.insideBlock;
+
+  if (!insert.layer.empty() && !(insert.layer == "0" && context.insideBlock &&
+                                 !context.currentLayer.empty())) {
+    context.currentLayer = insert.layer;
+  }
+  if (insert.color == kColorByBlock) {
+    if (!context.insideBlock) context.currentColor = kColorForeground;
+  } else {
+    // "Por capa" se queda marcado y lo resuelve la escena con la capa final.
+    context.currentColor = insert.color;
+  }
+  context.insideBlock = true;
+
   context.openBlocks.push_back(insert.blockName);
   expand(context, found->second.entities, found->second.inserts, combined,
          depth + 1);
   context.openBlocks.pop_back();
 
+  context.currentLayer = previousLayer;
+  context.currentColor = previousColor;
+  context.insideBlock = previousInside;
   context.currentInstance = previousInstance;
 }
 
@@ -88,7 +123,7 @@ FlattenResult flatten(const std::vector<Entity>& entities,
                       const std::map<std::string, BlockDefinition>& blocks,
                       const FlattenOptions& options) {
   FlattenResult result;
-  Context context{blocks, options, result, {}, 1, 0};
+  Context context{blocks, options, result, {}, 1, 0, {}, kColorForeground, false};
   expand(context, entities, inserts, Transform2D{}, 0);
   return result;
 }

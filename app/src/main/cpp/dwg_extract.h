@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "dwgcore/flatten.h"
+#include "dwgcore/scene.h"
 
 namespace dwgapp {
 
@@ -36,6 +37,9 @@ struct ExtractedScene {
   // las cuenta como bloques ausentes y la interfaz puede avisar en vez de
   // dibujar el plano incompleto en silencio.
   std::vector<XrefDeclaration> xrefs;
+
+  // Tabla de capas: color de cada una y si venía apagada o congelada.
+  dwgcore::LayerTable layers;
 
   // Tipos de entidad que todavía no se convierten, con su recuento. Sirve para
   // saber qué falta por implementar mirando planos reales en vez de adivinando.

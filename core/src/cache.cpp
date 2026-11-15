@@ -10,7 +10,7 @@ namespace {
 constexpr char kMagic[8] = {'D', 'W', 'G', 'C', 'A', 'C', 'H', 'E'};
 // Al cambiar el formato se sube la versión: una caché escrita por una versión
 // anterior se descarta y se vuelve a generar, en lugar de leerse mal.
-constexpr uint32_t kVersion = 3;
+constexpr uint32_t kVersion = 4;
 
 // Banderas empaquetadas en un byte por entidad.
 constexpr uint8_t kFlagClosed = 1 << 0;
@@ -118,7 +118,13 @@ bool writeCache(const std::string& path, const Scene& scene,
   out.value(stamp.variant);
 
   out.value(static_cast<uint32_t>(scene.layers.size()));
-  for (const std::string& layer : scene.layers) out.text(layer);
+  for (size_t i = 0; i < scene.layers.size(); ++i) {
+    out.text(scene.layers[i]);
+    const LayerStyle style =
+        i < scene.layerStyles.size() ? scene.layerStyles[i] : LayerStyle{};
+    out.value(style.color);
+    out.value(static_cast<uint8_t>(style.hidden ? 1 : 0));
+  }
 
   out.value(static_cast<uint32_t>(scene.blocks.size()));
   for (const BlockInfo& block : scene.blocks) {
@@ -145,6 +151,7 @@ bool writeCache(const std::string& path, const Scene& scene,
     if (entity.bounds.valid) flags |= kFlagBoundsValid;
     out.value(flags);
     out.value(entity.layerId);
+    out.value(entity.color);
     out.value(entity.blockId);
     out.value(entity.instanceId);
     out.value(entity.id);
@@ -208,11 +215,15 @@ bool readCache(const std::string& path, const CacheStamp& expected, Scene& scene
     return false;
   }
   loaded.layers.resize(layerCount);
-  for (std::string& layer : loaded.layers) {
-    if (!in.text(layer, kMaxTextLength)) {
+  loaded.layerStyles.resize(layerCount);
+  for (size_t i = 0; i < loaded.layers.size(); ++i) {
+    uint8_t hidden = 0;
+    if (!in.text(loaded.layers[i], kMaxTextLength) ||
+        !in.value(loaded.layerStyles[i].color) || !in.value(hidden)) {
       std::fclose(file);
       return false;
     }
+    loaded.layerStyles[i].hidden = hidden != 0;
   }
 
   uint32_t blockCount = 0;
@@ -242,7 +253,7 @@ bool readCache(const std::string& path, const CacheStamp& expected, Scene& scene
     uint8_t type = 0;
     uint8_t flags = 0;
     if (!in.value(type) || !in.value(flags) || !in.value(entity.layerId) ||
-        !in.value(entity.blockId) || !in.value(entity.instanceId) ||
+        !in.value(entity.color) || !in.value(entity.blockId) || !in.value(entity.instanceId) ||
         !in.value(entity.id) || !in.value(entity.bounds.min) ||
         !in.value(entity.bounds.max)) {
       std::fclose(file);

@@ -15,6 +15,12 @@ namespace dwgcore {
 struct InsertRef {
   std::string blockName;
   Transform2D transform;
+
+  // Capa y color de la propia inserción. Lo que dentro del bloque esté en la
+  // capa "0" o con color "por bloque" los toma de aquí: es la regla de AutoCAD
+  // que hace que un mismo símbolo salga en la capa donde se coloca.
+  std::string layer;
+  uint32_t color = kColorByLayer;
 };
 
 // Definición de bloque: su contenido en coordenadas locales del bloque.

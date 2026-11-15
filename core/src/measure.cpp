@@ -39,6 +39,9 @@ Measurement measureEntity(const Scene& scene, uint32_t entityIndex) {
   // Una spline o una elipse llegan ya teseladas y su longitud es buena pero no
   // exacta; conviene que quien lea la cifra lo sepa.
   measurement.approximate = entity.approximated;
+  if (entity.closed && entity.vertices.size() >= 2) {
+    measurement.area = entityArea(entity);
+  }
 
   measurement.points.reserve(entity.vertices.size());
   for (const PolyVertex& vertex : entity.vertices) {

@@ -63,7 +63,10 @@ RenderData buildRenderData(const Scene& scene, double maxSagitta) {
   std::vector<uint32_t> order(scene.entities.size());
   for (uint32_t i = 0; i < order.size(); ++i) order[i] = i;
   std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-    return scene.entities[a].layerId < scene.entities[b].layerId;
+    const Entity& left = scene.entities[a];
+    const Entity& right = scene.entities[b];
+    if (left.layerId != right.layerId) return left.layerId < right.layerId;
+    return left.color < right.color;
   });
 
   // Estimación para reservar de una vez: la mayoría de las entidades son
@@ -76,7 +79,8 @@ RenderData buildRenderData(const Scene& scene, double maxSagitta) {
   for (uint32_t index : order) {
     const Entity& entity = scene.entities[index];
 
-    if (batchOpen && batch.layerId != entity.layerId) {
+    if (batchOpen &&
+        (batch.layerId != entity.layerId || batch.color != entity.color)) {
       batch.vertexCount =
           static_cast<uint32_t>(data.vertices.size() / 2) - batch.firstVertex;
       // Una capa cuyas entidades no han producido ni un segmento no genera
@@ -88,6 +92,7 @@ RenderData buildRenderData(const Scene& scene, double maxSagitta) {
     if (!batchOpen) {
       batch = RenderBatch{};
       batch.layerId = entity.layerId;
+      batch.color = entity.color;
       batch.firstVertex = static_cast<uint32_t>(data.vertices.size() / 2);
       batchOpen = true;
     }

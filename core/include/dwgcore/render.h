@@ -12,13 +12,16 @@
 
 namespace dwgcore {
 
-// Un tramo contiguo del buffer con toda la geometría de una capa.
+// Un tramo contiguo del buffer con la geometría de una capa y un color.
 //
 // Al estar cada capa junta, encender o apagarla es saltarse una llamada de
 // dibujo. No hay que reconstruir nada, que es lo que permite que el panel de
 // capas responda al instante incluso con planos grandes.
 struct RenderBatch {
   uint16_t layerId = 0;
+  // Color del tramo, 0xFFRRGGBB, o kColorForeground para el de primer plano.
+  // Dentro de una capa hay un lote por color: lo habitual es uno solo.
+  uint32_t color = 0;
   uint32_t firstVertex = 0;  // En vértices, no en floats.
   uint32_t vertexCount = 0;
 };

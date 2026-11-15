@@ -13,3 +13,6 @@ vendor/
 *.dwg
 *.dxf
 *.bak
+build-host/
+.kotlin/
+.cxx/

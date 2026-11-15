@@ -33,6 +33,11 @@ struct Measurement {
   // debe indicarlo en lugar de presentar una cifra que parece exacta y no lo es.
   bool approximate = false;
 
+  // Solo al medir una entidad cerrada: la superficie que encierra. Así un
+  // contorno —una estancia dibujada con polilínea, el borde de un sombreado—
+  // da perímetro y superficie de un solo toque.
+  double area = 0.0;
+
   int count = 0;
   std::string label;
 };

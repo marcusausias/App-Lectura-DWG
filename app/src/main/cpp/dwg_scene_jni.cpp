@@ -46,6 +46,45 @@ std::vector<uint16_t> toLayerList(JNIEnv* env, jintArray layers) {
   return result;
 }
 
+// Crea un String de Java a partir de texto del DWG.
+//
+// NewStringUTF exige "UTF-8 modificado" válido y, si no lo recibe, aborta el
+// proceso entero. Los textos de un DWG antiguo pueden traer bytes sueltos de
+// una página de códigos de Windows, y los emojis ocupan cuatro bytes, que ese
+// formato no admite. Aquí se sustituye por '?' todo lo que no sea una secuencia
+// correcta de uno a tres bytes, de modo que un texto raro no pueda tumbar la app.
+jstring newString(JNIEnv* env, const std::string& text) {
+  std::string safe;
+  safe.reserve(text.size());
+  const size_t size = text.size();
+  for (size_t i = 0; i < size;) {
+    const unsigned char c = static_cast<unsigned char>(text[i]);
+    const auto continuation = [&](size_t at) {
+      return at < size && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80;
+    };
+    if (c == 0) {
+      break;
+    } else if (c < 0x80) {
+      safe.push_back(static_cast<char>(c));
+      i += 1;
+    } else if (c >= 0xC2 && c <= 0xDF && continuation(i + 1)) {
+      safe.append(text, i, 2);
+      i += 2;
+    } else if (c >= 0xE0 && c <= 0xEF && continuation(i + 1) && continuation(i + 2)) {
+      safe.append(text, i, 3);
+      i += 3;
+    } else if (c >= 0xF0 && c <= 0xF4 && continuation(i + 1) && continuation(i + 2) &&
+               continuation(i + 3)) {
+      safe.push_back('?');
+      i += 4;
+    } else {
+      safe.push_back('?');
+      i += 1;
+    }
+  }
+  return env->NewStringUTF(safe.c_str());
+}
+
 std::string toString(JNIEnv* env, jstring text) {
   if (text == nullptr) return {};
   const char* raw = env->GetStringUTFChars(text, nullptr);
@@ -97,7 +136,7 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_openPlan(
 
     dwgcore::FlattenResult flat =
         dwgcore::flatten(extracted.entities, extracted.inserts, extracted.blocks);
-    plan->scene = dwgcore::buildScene(std::move(flat.entities));
+    plan->scene = dwgcore::buildScene(std::move(flat.entities), 16, &extracted.layers);
 
     // Que no se pueda escribir la caché no impide usar el plano: solo hará que
     // la próxima apertura vuelva a tardar.
@@ -126,7 +165,8 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_getVertexBuffer(
       static_cast<jlong>(plan->render.vertices.size() * sizeof(float)));
 }
 
-// Lotes aplanados de tres en tres: capa, primer vértice, número de vértices.
+// Lotes aplanados de cuatro en cuatro: capa, color, primer vértice, número de
+// vértices. El color va como 0xFFRRGGBB, o 0 para el de primer plano.
 JNIEXPORT jintArray JNICALL
 Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_getBatches(JNIEnv* env,
                                                                    jobject,
@@ -136,9 +176,10 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_getBatches(JNIEnv* env,
 
   const std::vector<dwgcore::RenderBatch>& batches = plan->render.batches;
   std::vector<jint> flat;
-  flat.reserve(batches.size() * 3);
+  flat.reserve(batches.size() * 4);
   for (const dwgcore::RenderBatch& batch : batches) {
     flat.push_back(static_cast<jint>(batch.layerId));
+    flat.push_back(static_cast<jint>(batch.color));
     flat.push_back(static_cast<jint>(batch.firstVertex));
     flat.push_back(static_cast<jint>(batch.vertexCount));
   }
@@ -160,10 +201,34 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_getLayers(JNIEnv* env,
   jobjectArray result = env->NewObjectArray(
       static_cast<jsize>(plan->scene.layers.size()), stringClass, nullptr);
   for (size_t i = 0; i < plan->scene.layers.size(); ++i) {
-    jstring name = env->NewStringUTF(plan->scene.layers[i].c_str());
+    jstring name = newString(env, plan->scene.layers[i]);
     env->SetObjectArrayElement(result, static_cast<jsize>(i), name);
     env->DeleteLocalRef(name);
   }
+  return result;
+}
+
+// Estilo de cada capa, de dos en dos: color (0xFFRRGGBB o 0) y si viene oculta
+// en el DWG (apagada o congelada).
+JNIEXPORT jintArray JNICALL
+Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_getLayerStyles(
+    JNIEnv* env, jobject, jlong handle) {
+  OpenPlan* plan = fromHandle(handle);
+  if (plan == nullptr) return nullptr;
+
+  std::vector<jint> flat;
+  flat.reserve(plan->scene.layers.size() * 2);
+  for (size_t i = 0; i < plan->scene.layers.size(); ++i) {
+    const dwgcore::LayerStyle style = i < plan->scene.layerStyles.size()
+                                          ? plan->scene.layerStyles[i]
+                                          : dwgcore::LayerStyle{};
+    flat.push_back(static_cast<jint>(style.color));
+    flat.push_back(style.hidden ? 1 : 0);
+  }
+
+  jintArray result = env->NewIntArray(static_cast<jsize>(flat.size()));
+  if (result == nullptr) return nullptr;
+  env->SetIntArrayRegion(result, 0, static_cast<jsize>(flat.size()), flat.data());
   return result;
 }
 
@@ -228,7 +293,7 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_getVisibleTexts(
     if (entity.text.empty() || entity.vertices.empty()) continue;
     if (entity.textHeight < minHeight) continue;
 
-    jstring content = env->NewStringUTF(entity.text.c_str());
+    jstring content = newString(env, entity.text);
     jobject item = env->NewObject(
         textClass, init, content, entity.vertices[0].position.x,
         entity.vertices[0].position.y, entity.textHeight, entity.textRotation,
@@ -264,8 +329,8 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_inspectXrefs(
       static_cast<jsize>(scene.xrefs.size() * 2), stringClass, nullptr);
 
   for (size_t i = 0; i < scene.xrefs.size(); ++i) {
-    jstring name = env->NewStringUTF(scene.xrefs[i].blockName.c_str());
-    jstring path = env->NewStringUTF(scene.xrefs[i].rawPath.c_str());
+    jstring name = newString(env, scene.xrefs[i].blockName);
+    jstring path = newString(env, scene.xrefs[i].rawPath);
     env->SetObjectArrayElement(result, static_cast<jsize>(i * 2), name);
     env->SetObjectArrayElement(result, static_cast<jsize>(i * 2 + 1), path);
     env->DeleteLocalRef(name);
@@ -321,7 +386,8 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_pickEntity(
 }
 
 // Longitud de una entidad siguiéndola entera, con sus arcos exactos.
-// Devuelve {longitud, esAproximada, nºPuntos, x0, y0, x1, y1, ...}.
+// Devuelve {longitud, esAproximada, superficie, nºPuntos, x0, y0, x1, y1, ...}.
+// La superficie vale 0 si la entidad no es un contorno cerrado.
 JNIEXPORT jdoubleArray JNICALL
 Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_measureEntity(
     JNIEnv* env, jobject, jlong handle, jint entityIndex) {
@@ -337,9 +403,10 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_measureEntity(
   const size_t pointCount = std::min(measurement.points.size(), maxPoints);
 
   std::vector<jdouble> values;
-  values.reserve(3 + pointCount * 2);
+  values.reserve(4 + pointCount * 2);
   values.push_back(measurement.value);
   values.push_back(measurement.approximate ? 1.0 : 0.0);
+  values.push_back(measurement.area);
   values.push_back(static_cast<jdouble>(pointCount));
   for (size_t i = 0; i < pointCount; ++i) {
     values.push_back(measurement.points[i].x);
@@ -363,7 +430,7 @@ Java_com_marcusausias_dwgviewer_nativebridge_PlanNative_countSymbolName(
   const dwgcore::Measurement measurement =
       dwgcore::measureCount(plan->scene, static_cast<uint32_t>(entityIndex));
   if (measurement.count == 0) return nullptr;
-  return env->NewStringUTF(measurement.label.c_str());
+  return newString(env, measurement.label);
 }
 
 JNIEXPORT jint JNICALL

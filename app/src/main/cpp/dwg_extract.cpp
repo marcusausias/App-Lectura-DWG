@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 
 #include <dwg.h>
 #include <dwg_api.h>
@@ -58,6 +59,132 @@ std::string layerNameOf(Dwg_Data* dwg, const Dwg_Object* object) {
   if (layerObject == nullptr || layerObject->tio.object == nullptr) return {};
   if (layerObject->fixedtype != DWG_TYPE_LAYER) return {};
   return readText(layerObject->tio.object->tio.LAYER, "LAYER", "name");
+}
+
+// Color de AutoCAD a 0xFFRRGGBB, o a uno de los marcadores de dwgcore.
+//
+// Un color puede venir de tres formas: como índice de la paleta de 256, como
+// RGB directo, o como "el de la capa" / "el del bloque". El primer byte del
+// campo rgb dice cuál se usa en los DWG modernos; en los antiguos solo existe
+// el índice.
+uint32_t colorOf(const Dwg_Color& color) {
+  int index = color.index;
+  const unsigned method = (color.rgb >> 24) & 0xFF;
+  switch (method) {
+    case 0xC0: return dwgcore::kColorByLayer;
+    case 0xC1: return dwgcore::kColorByBlock;
+    case 0xC2: return 0xFF000000u | (color.rgb & 0x00FFFFFFu);
+    case 0xC3: index = static_cast<int>(color.rgb & 0xFF); break;
+    default: break;
+  }
+
+  // En la tabla de capas un índice negativo significa "capa apagada", con el
+  // color en el valor absoluto.
+  if (index < 0) index = -index;
+  if (index == 256) return dwgcore::kColorByLayer;
+  if (index == 0) return dwgcore::kColorByBlock;
+  // El 7 es el color que cambia con el fondo: negro sobre claro, blanco sobre
+  // oscuro. No se fija aquí; lo decide quien dibuja.
+  if (index == 7 || index > 255) return dwgcore::kColorForeground;
+
+  const Dwg_RGB_Palette* palette = dwg_rgb_palette();
+  if (palette == nullptr) return dwgcore::kColorForeground;
+  return 0xFF000000u | (static_cast<uint32_t>(palette[index].r) << 16) |
+         (static_cast<uint32_t>(palette[index].g) << 8) |
+         static_cast<uint32_t>(palette[index].b);
+}
+
+// Códigos de control que AutoCAD admite dentro de cualquier texto.
+void replaceAll(std::string& text, const std::string& from, const std::string& to) {
+  size_t at = 0;
+  while ((at = text.find(from, at)) != std::string::npos) {
+    text.replace(at, from.size(), to);
+    at += to.size();
+  }
+}
+
+std::string decodePercentCodes(std::string text) {
+  if (text.find("%%") == std::string::npos) return text;
+  for (const char* code : {"%%c", "%%C"}) replaceAll(text, code, "\xC3\x98");  // Ø
+  for (const char* code : {"%%d", "%%D"}) replaceAll(text, code, "\xC2\xB0");  // °
+  for (const char* code : {"%%p", "%%P"}) replaceAll(text, code, "\xC2\xB1");  // ±
+  for (const char* code : {"%%u", "%%U", "%%o", "%%O", "%%k", "%%K"}) {
+    replaceAll(text, code, "");
+  }
+  replaceAll(text, "%%%", "%");
+  return text;
+}
+
+// Un MTEXT lleva el formato mezclado con el contenido: `{\fArial|b0;Salón}\P12 m²`.
+// Dibujado tal cual es ilegible, así que se quita el formato y se dejan solo el
+// texto y los saltos de línea.
+std::string stripMTextFormat(const std::string& raw) {
+  std::string out;
+  out.reserve(raw.size());
+  for (size_t i = 0; i < raw.size(); ++i) {
+    const char c = raw[i];
+    if (c == '{' || c == '}') continue;
+    if (c != '\\' || i + 1 >= raw.size()) {
+      out.push_back(c);
+      continue;
+    }
+
+    const char code = raw[++i];
+    switch (code) {
+      case '\\': case '{': case '}':
+        out.push_back(code);
+        break;
+      case 'P': case 'X':
+        out.push_back('\n');
+        break;
+      case 'N':
+        out.push_back('\n');
+        break;
+      case '~':
+        out.push_back(' ');
+        break;
+      case 'L': case 'l': case 'O': case 'o': case 'K': case 'k':
+        break;  // Subrayados y tachados: no llevan argumento.
+      case 'S': {
+        // Fracción apilada: \S1^2; o \S1/2; o \S1#2;
+        const size_t end = raw.find(';', i + 1);
+        std::string stacked = raw.substr(i + 1, end == std::string::npos
+                                                    ? std::string::npos
+                                                    : end - i - 1);
+        for (char& ch : stacked) {
+          if (ch == '^' || ch == '#') ch = '/';
+        }
+        out += stacked;
+        i = end == std::string::npos ? raw.size() : end;
+        break;
+      }
+      case 'U':
+        // \U+00E1: carácter Unicode que el archivo no pudo guardar directo.
+        if (i + 5 < raw.size() && raw[i + 1] == '+') {
+          const unsigned long cp = std::strtoul(raw.substr(i + 2, 4).c_str(), nullptr, 16);
+          if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+          } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+          } else {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+          }
+          i += 5;
+        }
+        break;
+      default: {
+        // El resto (\f fuente, \H altura, \C color, \A alineación, \W, \Q, \T,
+        // \p párrafo…) lleva un argumento que acaba en punto y coma.
+        const size_t end = raw.find(';', i + 1);
+        i = end == std::string::npos ? raw.size() : end;
+        break;
+      }
+    }
+  }
+  return decodePercentCodes(out);
 }
 
 Entity convertLine(const Dwg_Entity_LINE* line) {
@@ -205,7 +332,7 @@ Entity convertText(Dwg_Entity_TEXT* text) {
   entity.vertices = {
       {toWorld(text->ins_pt.x, text->ins_pt.y, text->elevation, text->extrusion),
        0.0}};
-  entity.text = readText(text, "TEXT", "text_value");
+  entity.text = decodePercentCodes(readText(text, "TEXT", "text_value"));
   entity.textHeight = text->height;
   entity.textRotation = text->rotation;
   dwgcore::updateBounds(entity);
@@ -218,12 +345,194 @@ Entity convertMText(Dwg_Entity_MTEXT* mtext) {
   entity.vertices = {{toWorld(mtext->ins_pt.x, mtext->ins_pt.y, mtext->ins_pt.z,
                               mtext->extrusion),
                       0.0}};
-  entity.text = readText(mtext, "MTEXT", "text");
+  entity.text = stripMTextFormat(readText(mtext, "MTEXT", "text"));
   entity.textHeight = mtext->text_height;
   // MTEXT no guarda un ángulo, sino el vector que marca la dirección del texto.
   entity.textRotation = std::atan2(mtext->x_axis_dir.y, mtext->x_axis_dir.x);
+
+  // El punto de un MTEXT suele ser su esquina superior, mientras que el resto
+  // de la cadena trata la posición como la línea base de la primera línea. Se
+  // baja una altura (o media, si se ancla por el centro) para que el texto no
+  // salga un renglón por encima de donde está en el plano.
+  const int attachment = static_cast<int>(mtext->attachment);
+  double drop = 0.0;
+  if (attachment >= 1 && attachment <= 3) drop = entity.textHeight;
+  else if (attachment >= 4 && attachment <= 6) drop = entity.textHeight * 0.5;
+  if (drop != 0.0) {
+    entity.vertices[0].position.x += std::sin(entity.textRotation) * drop;
+    entity.vertices[0].position.y -= std::cos(entity.textRotation) * drop;
+  }
   dwgcore::updateBounds(entity);
   return entity;
+}
+
+Entity convertAttrib(Dwg_Entity_ATTRIB* attrib) {
+  Entity entity;
+  entity.type = EntityType::Text;
+  entity.vertices = {{toWorld(attrib->ins_pt.x, attrib->ins_pt.y,
+                              attrib->elevation, attrib->extrusion),
+                      0.0}};
+  entity.text = decodePercentCodes(readText(attrib, "ATTRIB", "text_value"));
+  entity.textHeight = attrib->height;
+  entity.textRotation = attrib->rotation;
+  dwgcore::updateBounds(entity);
+  return entity;
+}
+
+Entity convertTrace(const Dwg_Entity_TRACE* trace) {
+  // Mismo orden cruzado de vértices que SOLID.
+  const double z = trace->elevation;
+  std::vector<PolyVertex> vertices = {
+      {toWorld(trace->corner1.x, trace->corner1.y, z, trace->extrusion), 0.0},
+      {toWorld(trace->corner2.x, trace->corner2.y, z, trace->extrusion), 0.0},
+      {toWorld(trace->corner4.x, trace->corner4.y, z, trace->extrusion), 0.0},
+      {toWorld(trace->corner3.x, trace->corner3.y, z, trace->extrusion), 0.0},
+  };
+  Entity entity = dwgcore::makePolyline(std::move(vertices), /*closed=*/true);
+  entity.type = EntityType::Hatch;
+  return entity;
+}
+
+Entity convert3dFace(const Dwg_Entity__3DFACE* face) {
+  // Se proyecta sobre el plano: la app es de planta, no de volumen.
+  std::vector<PolyVertex> vertices = {
+      {{face->corner1.x, face->corner1.y}, 0.0},
+      {{face->corner2.x, face->corner2.y}, 0.0},
+      {{face->corner3.x, face->corner3.y}, 0.0},
+      {{face->corner4.x, face->corner4.y}, 0.0},
+  };
+  return dwgcore::makePolyline(std::move(vertices), /*closed=*/true);
+}
+
+Entity convertLeader(const Dwg_Entity_LEADER* leader) {
+  std::vector<PolyVertex> vertices;
+  vertices.reserve(leader->num_points);
+  for (unsigned long i = 0; i < leader->num_points; ++i) {
+    vertices.push_back({{leader->points[i].x, leader->points[i].y}, 0.0});
+  }
+  return dwgcore::makePolyline(std::move(vertices), /*closed=*/false);
+}
+
+// Contornos de un sombreado.
+//
+// El relleno no se dibuja —un patrón denso multiplica por diez el peso del
+// plano sin aportar nada a la medición—, pero el contorno sí: es justo la
+// superficie de la estancia, del forjado o del pavimento, y con "Seguir" se
+// mide de un toque.
+void convertHatch(const Dwg_Entity_HATCH* hatch, std::vector<Entity>& out) {
+  constexpr double kTwoPi = 6.283185307179586;
+
+  for (unsigned long p = 0; p < hatch->num_paths; ++p) {
+    const Dwg_HATCH_Path& path = hatch->paths[p];
+    std::vector<PolyVertex> vertices;
+    bool approximated = false;
+
+    const auto world = [&](double x, double y) {
+      return toWorld(x, y, hatch->elevation, hatch->extrusion);
+    };
+
+    if ((path.flag & 2) != 0) {
+      if (path.polyline_paths == nullptr) continue;
+      vertices.reserve(path.num_segs_or_paths);
+      for (unsigned long i = 0; i < path.num_segs_or_paths; ++i) {
+        const Dwg_HATCH_PolylinePath& point = path.polyline_paths[i];
+        vertices.push_back({world(point.point.x, point.point.y),
+                            path.bulges_present ? point.bulge : 0.0});
+      }
+    } else {
+      if (path.segs == nullptr) continue;
+      for (unsigned long i = 0; i < path.num_segs_or_paths; ++i) {
+        const Dwg_HATCH_PathSeg& seg = path.segs[i];
+        switch (seg.curve_type) {
+          case 1:
+            vertices.push_back({world(seg.first_endpoint.x, seg.first_endpoint.y), 0.0});
+            if (i + 1 == path.num_segs_or_paths) {
+              vertices.push_back(
+                  {world(seg.second_endpoint.x, seg.second_endpoint.y), 0.0});
+            }
+            break;
+          case 2: {
+            // Un arco horario guarda sus ángulos reflejados respecto al eje X.
+            double sweep = std::fmod(seg.end_angle - seg.start_angle, kTwoPi);
+            if (sweep <= 0.0) sweep += kTwoPi;
+            const double sign = seg.is_ccw ? 1.0 : -1.0;
+            const double a0 = sign * seg.start_angle;
+            const double a1 = sign * seg.end_angle;
+            const double bulge = sign * std::tan(sweep / 4.0);
+            vertices.push_back({world(seg.center.x + seg.radius * std::cos(a0),
+                                      seg.center.y + seg.radius * std::sin(a0)),
+                                bulge});
+            // El extremo se añade siempre: si el siguiente tramo empieza en el
+            // mismo punto queda un vértice repetido, que no dibuja ni mide nada.
+            vertices.push_back({world(seg.center.x + seg.radius * std::cos(a1),
+                                      seg.center.y + seg.radius * std::sin(a1)),
+                                0.0});
+            break;
+          }
+          case 3: {
+            // Arco de elipse: se tesela, y la medida pasa a ser aproximada.
+            const double major = std::hypot(seg.endpoint.x, seg.endpoint.y);
+            const double rotation = std::atan2(seg.endpoint.y, seg.endpoint.x);
+            const double minor = major * seg.minor_major_ratio;
+            double sweep = std::fmod(seg.end_angle - seg.start_angle, kTwoPi);
+            if (sweep <= 0.0) sweep += kTwoPi;
+            const double sign = seg.is_ccw ? 1.0 : -1.0;
+            const int steps = 32;
+            for (int k = 0; k <= steps; ++k) {
+              const double t = sign * (seg.start_angle + sweep * k / steps);
+              const double ex = major * std::cos(t);
+              const double ey = minor * std::sin(t);
+              vertices.push_back(
+                  {world(seg.center.x + ex * std::cos(rotation) - ey * std::sin(rotation),
+                         seg.center.y + ex * std::sin(rotation) + ey * std::cos(rotation)),
+                   0.0});
+            }
+            approximated = true;
+            break;
+          }
+          case 4: {
+            if (seg.num_fitpts > 0 && seg.fitpts != nullptr) {
+              for (unsigned long k = 0; k < seg.num_fitpts; ++k) {
+                vertices.push_back({world(seg.fitpts[k].x, seg.fitpts[k].y), 0.0});
+              }
+            } else if (seg.control_points != nullptr && seg.knots != nullptr &&
+                       seg.num_control_points >= 2) {
+              std::vector<Vec2> control;
+              for (unsigned long k = 0; k < seg.num_control_points; ++k) {
+                control.push_back({seg.control_points[k].point.x,
+                                   seg.control_points[k].point.y});
+              }
+              std::vector<double> knots(seg.knots, seg.knots + seg.num_knots);
+              const int degree = seg.degree > 0 ? static_cast<int>(seg.degree) : 3;
+              for (const Vec2& point :
+                   dwgcore::tessellateBSpline(control, knots, degree, 32)) {
+                vertices.push_back({world(point.x, point.y), 0.0});
+              }
+            }
+            approximated = true;
+            break;
+          }
+          default:
+            break;
+        }
+      }
+    }
+
+    if (vertices.size() < 2) continue;
+    // Si el recorrido vuelve al punto de partida, sobra el último vértice: la
+    // polilínea ya se marca como cerrada.
+    if (vertices.size() > 2 &&
+        dwgcore::distance(vertices.front().position, vertices.back().position) <
+            1e-9 &&
+        vertices.back().bulge == 0.0) {
+      vertices.pop_back();
+    }
+
+    Entity entity = dwgcore::makePolyline(std::move(vertices), /*closed=*/true);
+    entity.type = EntityType::Hatch;
+    entity.approximated = approximated;
+    out.push_back(std::move(entity));
+  }
 }
 
 // Los vértices de una POLYLINE_2D no viven dentro de ella: son entidades
@@ -310,6 +619,7 @@ bool isStructuralMarker(int fixedtype) {
     case DWG_TYPE_ATTRIB:
     // Los vértices ya se han consumido al montar su polilínea.
     case DWG_TYPE_VERTEX_2D:
+    case DWG_TYPE_VERTEX_3D:
       return true;
     default:
       return false;
@@ -337,6 +647,22 @@ ExtractedScene extractScene(const std::string& path) {
         "LibreDWG no pudo leer el archivo (código " + std::to_string(error) + ")";
     dwg_free(&dwg);
     return scene;
+  }
+
+  // Tabla de capas: color y si estaba apagada o congelada.
+  for (unsigned long i = 0; i < dwg.num_objects; ++i) {
+    const Dwg_Object* object = &dwg.object[i];
+    if (object->supertype != DWG_SUPERTYPE_OBJECT) continue;
+    if (object->fixedtype != DWG_TYPE_LAYER) continue;
+    if (object->tio.object == nullptr) continue;
+    Dwg_Object_LAYER* layer = object->tio.object->tio.LAYER;
+    if (layer == nullptr) continue;
+
+    dwgcore::LayerStyle style;
+    const uint32_t color = colorOf(layer->color);
+    style.color = color >= 0xFF000000u ? color : dwgcore::kColorForeground;
+    style.hidden = layer->frozen || layer->off || layer->color.index < 0;
+    scene.layers[readText(layer, "LAYER", "name")] = style;
   }
 
   // Primera pasada: nombre de cada bloque por su handle, para saber después a
@@ -382,8 +708,16 @@ ExtractedScene extractScene(const std::string& path) {
   for (unsigned long i = 0; i < dwg.num_objects; ++i) {
     Dwg_Object* object = &dwg.object[i];
     if (object->supertype != DWG_SUPERTYPE_ENTITY) continue;
-    if (object->fixedtype != DWG_TYPE_VERTEX_2D) continue;
     if (object->tio.entity == nullptr) continue;
+
+    if (object->fixedtype == DWG_TYPE_VERTEX_3D) {
+      const Dwg_Entity_VERTEX_3D* vertex = object->tio.entity->tio.VERTEX_3D;
+      if (vertex == nullptr) continue;
+      vertexOwners[ownerHandleOf(&dwg, object)].push_back(
+          {{vertex->point.x, vertex->point.y}, 0.0});
+      continue;
+    }
+    if (object->fixedtype != DWG_TYPE_VERTEX_2D) continue;
 
     const Dwg_Entity_VERTEX_2D* vertex = object->tio.entity->tio.VERTEX_2D;
     if (vertex == nullptr) continue;
@@ -399,6 +733,20 @@ ExtractedScene extractScene(const std::string& path) {
       modelSpace != nullptr ? static_cast<unsigned long>(modelSpace->handle.value)
                             : 0;
 
+  // Inserciones colocadas directamente en el espacio modelo, para saber de
+  // cuáles se pueden recoger los atributos.
+  std::set<unsigned long> modelSpaceInserts;
+  for (unsigned long i = 0; i < dwg.num_objects; ++i) {
+    Dwg_Object* object = &dwg.object[i];
+    if (object->supertype != DWG_SUPERTYPE_ENTITY) continue;
+    if (object->fixedtype != DWG_TYPE_INSERT) continue;
+    if (object->tio.entity == nullptr) continue;
+    const unsigned long owner = ownerHandleOf(&dwg, object);
+    if (owner == modelSpaceHandle || owner == 0) {
+      modelSpaceInserts.insert(static_cast<unsigned long>(object->handle.value));
+    }
+  }
+
   // Segunda pasada: convertir entidades y repartirlas entre el espacio modelo y
   // los bloques a los que pertenecen.
   for (unsigned long i = 0; i < dwg.num_objects; ++i) {
@@ -406,8 +754,29 @@ ExtractedScene extractScene(const std::string& path) {
     if (object->supertype != DWG_SUPERTYPE_ENTITY) continue;
     if (object->tio.entity == nullptr) continue;
 
+    // Lo que el proyectista marcó como invisible no se dibuja ni se mide.
+    if ((object->tio.entity->invisible & 1) != 0) continue;
+
     const unsigned long owner = ownerHandleOf(&dwg, object);
     const bool inModelSpace = (owner == modelSpaceHandle) || (owner == 0);
+
+    // El valor de un atributo —el nombre de una estancia, el número de una
+    // puerta— cuelga de la inserción, no del bloque, y ya viene colocado en
+    // coordenadas del dibujo. Solo se recogen los de inserciones hechas
+    // directamente en el espacio modelo: dentro de un bloque anidado harían
+    // falta las transformadas de todos sus contenedores.
+    if (object->fixedtype == DWG_TYPE_ATTRIB) {
+      Dwg_Entity_ATTRIB* attrib = object->tio.entity->tio.ATTRIB;
+      if (attrib == nullptr || (attrib->flags & 1) != 0) continue;
+      if (modelSpaceInserts.count(owner) == 0) continue;
+      Entity text = convertAttrib(attrib);
+      if (text.text.empty()) continue;
+      text.id = static_cast<uint64_t>(object->handle.value);
+      text.layer = layerNameOf(&dwg, object);
+      text.color = colorOf(object->tio.entity->color);
+      scene.entities.push_back(std::move(text));
+      continue;
+    }
 
     std::string ownerBlock;
     if (!inModelSpace) {
@@ -430,6 +799,8 @@ ExtractedScene extractScene(const std::string& path) {
       }
       dwgcore::InsertRef ref;
       ref.blockName = blockName;
+      ref.layer = layerNameOf(&dwg, object);
+      ref.color = colorOf(object->tio.entity->color);
       if (inModelSpace) {
         scene.inserts.push_back(std::move(ref));
       } else {
@@ -441,10 +812,32 @@ ExtractedScene extractScene(const std::string& path) {
     if (object->fixedtype == DWG_TYPE_INSERT) {
       dwgcore::InsertRef ref = convertInsert(&dwg, object->tio.entity->tio.INSERT);
       if (ref.blockName.empty()) continue;
+      ref.layer = layerNameOf(&dwg, object);
+      ref.color = colorOf(object->tio.entity->color);
       if (inModelSpace) {
         scene.inserts.push_back(std::move(ref));
       } else {
         scene.blocks[ownerBlock].inserts.push_back(std::move(ref));
+      }
+      continue;
+    }
+
+    if (object->fixedtype == DWG_TYPE_HATCH) {
+      std::vector<Entity> contours;
+      if (object->tio.entity->tio.HATCH != nullptr) {
+        convertHatch(object->tio.entity->tio.HATCH, contours);
+      }
+      const std::string layer = layerNameOf(&dwg, object);
+      const uint32_t color = colorOf(object->tio.entity->color);
+      for (Entity& contour : contours) {
+        contour.id = static_cast<uint64_t>(object->handle.value);
+        contour.layer = layer;
+        contour.color = color;
+        if (inModelSpace) {
+          scene.entities.push_back(std::move(contour));
+        } else {
+          scene.blocks[ownerBlock].entities.push_back(std::move(contour));
+        }
       }
       continue;
     }
@@ -462,6 +855,25 @@ ExtractedScene extractScene(const std::string& path) {
         break;
       case DWG_TYPE_LWPOLYLINE:
         entity = convertLwPolyline(object->tio.entity->tio.LWPOLYLINE);
+        break;
+      case DWG_TYPE_POLYLINE_3D: {
+        const auto vertices =
+            vertexOwners.find(static_cast<unsigned long>(object->handle.value));
+        if (vertices == vertexOwners.end()) continue;
+        if (object->tio.entity->tio.POLYLINE_3D == nullptr) continue;
+        entity = dwgcore::makePolyline(
+            vertices->second,
+            (object->tio.entity->tio.POLYLINE_3D->flag & 1) != 0);
+        break;
+      }
+      case DWG_TYPE_TRACE:
+        entity = convertTrace(object->tio.entity->tio.TRACE);
+        break;
+      case DWG_TYPE__3DFACE:
+        entity = convert3dFace(object->tio.entity->tio._3DFACE);
+        break;
+      case DWG_TYPE_LEADER:
+        entity = convertLeader(object->tio.entity->tio.LEADER);
         break;
       case DWG_TYPE_POLYLINE_2D: {
         const auto vertices =
@@ -498,6 +910,7 @@ ExtractedScene extractScene(const std::string& path) {
 
     entity.id = static_cast<uint64_t>(object->handle.value);
     entity.layer = layerNameOf(&dwg, object);
+    entity.color = colorOf(object->tio.entity->color);
 
     if (inModelSpace) {
       scene.entities.push_back(std::move(entity));
@@ -551,6 +964,12 @@ void mergeInto(ExtractedScene& target, ExtractedScene& source,
   definition.inserts = std::move(source.inserts);
   renameInserts(definition.inserts, xrefName);
   target.blocks[xrefName] = std::move(definition);
+
+  // Las capas del archivo externo se suman a la tabla sin pisar las del plano
+  // principal, que es quien manda cuando coinciden los nombres.
+  for (const auto& [name, style] : source.layers) {
+    target.layers.emplace(name, style);
+  }
 
   for (const auto& [type, count] : source.unsupported) {
     target.unsupported[type] += count;

@@ -4,6 +4,7 @@
 // abrir un plano por segunda vez consiste en leer este bloque y poco más.
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -21,11 +22,25 @@ struct BlockInfo {
   int instanceCount = 0;
 };
 
+// Cómo viene una capa en el DWG: su color y si estaba apagada o congelada.
+struct LayerStyle {
+  uint32_t color = kColorForeground;  // 0xFFRRGGBB o kColorForeground.
+  bool hidden = false;
+};
+
+using LayerTable = std::map<std::string, LayerStyle>;
+
 struct Scene {
   // Nombres de capa sin repetir. Las entidades apuntan aquí por índice, que es
   // también como se agrupan los lotes de dibujo y como funciona el panel de
   // capas: encender o apagar una es marcar un índice.
   std::vector<std::string> layers;
+
+  // En paralelo con `layers`. Una capa que el proyectista dejó apagada o
+  // congelada arranca oculta: lo normal es que contenga líneas auxiliares que
+  // no deben verse ni medirse, y enseñarlas hace que el plano no se parezca al
+  // de AutoCAD.
+  std::vector<LayerStyle> layerStyles;
 
   // Símbolos, sin repetir. Las entidades apuntan aquí con `blockId`; el índice
   // 0 está reservado para lo que no viene de ningún bloque.
@@ -48,6 +63,11 @@ void queryEntities(const Scene& scene, const Bounds& area,
 
 // Monta la escena a partir de las entidades ya aplanadas: unifica los nombres
 // de capa, calcula la extensión total y construye el índice espacial.
-Scene buildScene(std::vector<Entity> entities, int nodeCapacity = 16);
+//
+// `layerTable` es la tabla de capas del DWG. Con ella se resuelven los colores
+// "por capa" y se sabe qué capas arrancan ocultas; sin ella todo sale en el
+// color de primer plano.
+Scene buildScene(std::vector<Entity> entities, int nodeCapacity = 16,
+                 const LayerTable* layerTable = nullptr);
 
 }  // namespace dwgcore
